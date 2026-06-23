@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chord Progression Generator</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: #0c0c18;
+      color: #e2e2f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 52px 24px 72px;
+    }
+
+    /* ── Header ── */
+    .header {
+      text-align: center;
+      margin-bottom: 44px;
+    }
+
+    .header h1 {
+      font-size: 2.5rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, #c084fc 0%, #818cf8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      letter-spacing: -0.5px;
+      margin-bottom: 8px;
+    }
+
+    .header p {
+      color: #4a4a6a;
+      font-size: 0.9rem;
+      letter-spacing: 0.4px;
+    }
+
+    /* ── Panel ── */
+    .panel {
+      background: #11111e;
+      border: 1px solid #1c1c2e;
+      border-radius: 20px;
+      padding: 32px;
+      width: 100%;
+      max-width: 680px;
+      margin-bottom: 28px;
+    }
+
+    .controls {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      flex: 1;
+    }
+
+    label {
+      font-size: 0.68rem;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: #4a4a6a;
+      font-weight: 700;
+    }
+
+    select {
+      background: #0c0c18;
+      color: #e2e2f0;
+      border: 1.5px solid #1c1c2e;
+      border-radius: 10px;
+      padding: 11px 38px 11px 14px;
+      font-size: 0.97rem;
+      font-weight: 500;
+      cursor: pointer;
+      outline: none;
+      appearance: none;
+      -webkit-appearance: none;
+      width: 100%;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24'%3E%3Cpath fill='%234a4a6a' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      transition: border-color 0.15s ease;
+    }
+
+    select:hover  { border-color: #5b3fa0; }
+    select:focus  { border-color: #8b5cf6; box-shadow: 0 0 0 3px rgba(139,92,246,0.1); }
+
+    .btn-generate {
+      width: 100%;
+      background: linear-gradient(135deg, #6d28d9, #7c3aed);
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      padding: 14px 24px;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.3px;
+      transition: all 0.18s ease;
+      box-shadow: 0 4px 28px rgba(109,40,217,0.38);
+    }
+
+    .btn-generate:hover {
+      background: linear-gradient(135deg, #7c3aed, #a78bfa);
+      box-shadow: 0 6px 32px rgba(109,40,217,0.55);
+      transform: translateY(-1px);
+    }
+
+    .btn-generate:active { transform: translateY(0); }
+
+    /* ── Output ── */
+    .output {
+      width: 100%;
+      max-width: 680px;
+    }
+
+    .meta {
+      text-align: center;
+      margin-bottom: 22px;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 0.3s ease, transform 0.3s ease;
+      pointer-events: none;
+    }
+
+    .meta.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
+
+    .meta-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #c084fc;
+      margin-bottom: 5px;
+    }
+
+    .meta-formula {
+      font-size: 0.8rem;
+      color: #3e3e5e;
+      letter-spacing: 1.5px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+
+    /* ── Chord Grid ── */
+    .chord-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+
+    @media (max-width: 480px) {
+      .chord-grid { grid-template-columns: repeat(2, 1fr); }
+      .controls   { flex-wrap: wrap; }
+    }
+
+    .chord-card {
+      background: #11111e;
+      border: 1.5px solid #1c1c2e;
+      border-radius: 16px;
+      padding: 22px 14px 18px;
+      text-align: center;
+      opacity: 0;
+      transform: translateY(14px);
+      transition: opacity 0.3s ease, transform 0.3s ease, border-color 0.2s ease,
+                  box-shadow 0.2s ease, background 0.2s ease;
+    }
+
+    .chord-card.in {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .chord-card.active {
+      border-color: #8b5cf6;
+      background: #17143a;
+      box-shadow: 0 0 0 1px #8b5cf6, 0 0 36px rgba(139,92,246,0.22);
+    }
+
+    .card-ord {
+      font-size: 0.6rem;
+      color: #2e2e4a;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    .card-roman {
+      font-size: 0.8rem;
+      color: #5b4f8a;
+      font-style: italic;
+      margin-bottom: 2px;
+    }
+
+    .card-name {
+      font-size: 2.1rem;
+      font-weight: 800;
+      color: #eae8ff;
+      letter-spacing: -1px;
+      line-height: 1;
+      margin-bottom: 8px;
+    }
+
+    .card-badge {
+      display: inline-block;
+      font-size: 0.6rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.8px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      margin-bottom: 14px;
+    }
+
+    .card-badge.major {
+      color: #a78bfa;
+      background: rgba(167,139,250,0.1);
+      border: 1px solid rgba(167,139,250,0.2);
+    }
+
+    .card-badge.minor {
+      color: #818cf8;
+      background: rgba(129,140,248,0.1);
+      border: 1px solid rgba(129,140,248,0.2);
+    }
+
+    .card-notes {
+      font-size: 0.75rem;
+      color: #3e3e62;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      line-height: 1.9;
+    }
+
+    /* ── Play Button ── */
+    .btn-play {
+      width: 100%;
+      background: transparent;
+      color: #7c5cc4;
+      border: 1.5px solid #28204a;
+      border-radius: 12px;
+      padding: 13px 24px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      transition: all 0.18s ease;
+    }
+
+    .btn-play:hover:not(:disabled) {
+      background: rgba(139,92,246,0.08);
+      border-color: #8b5cf6;
+      color: #a78bfa;
+    }
+
+    .btn-play:disabled { opacity: 0.28; cursor: not-allowed; }
+
+    .btn-play.playing {
+      color: #f472b6;
+      border-color: #4a1a3a;
+    }
+
+    .btn-play.playing:hover {
+      background: rgba(244,114,182,0.08);
+      border-color: #f472b6;
+    }
+
+    /* ── Placeholder ── */
+    .placeholder {
+      text-align: center;
+      padding: 52px 0;
+      margin-bottom: 22px;
+    }
+
+    .placeholder svg {
+      width: 46px;
+      height: 46px;
+      color: #1e1e32;
+      margin-bottom: 14px;
+      display: block;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .placeholder p {
+      font-size: 0.88rem;
+      color: #2a2a42;
+    }
+
+    /* ── Waveform Bars (playing indicator) ── */
+    .wave-bars {
+      display: none;
+      align-items: flex-end;
+      gap: 3px;
+      height: 16px;
+    }
+
+    .btn-play.playing .wave-bars {
+      display: flex;
+    }
+
+    .btn-play.playing .play-icon { display: none; }
+
+    .wave-bar {
+      width: 3px;
+      background: #f472b6;
+      border-radius: 2px;
+      animation: wave 0.8s ease-in-out infinite;
+    }
+
+    .wave-bar:nth-child(1) { height: 6px;  animation-delay: 0s; }
+    .wave-bar:nth-child(2) { height: 12px; animation-delay: 0.1s; }
+    .wave-bar:nth-child(3) { height: 9px;  animation-delay: 0.2s; }
+    .wave-bar:nth-child(4) { height: 14px; animation-delay: 0.05s; }
+    .wave-bar:nth-child(5) { height: 7px;  animation-delay: 0.15s; }
+
+    @keyframes wave {
+      0%, 100% { transform: scaleY(1); }
+      50%       { transform: scaleY(0.35); }
+    }
+  </style>
+</head>
+<body>
+
+<header class="header">
+  <h1>Chord Progression Generator</h1>
+  <p>Music theory–based progressions for every key and mood</p>
+</header>
+
+<div class="panel">
+  <div class="controls">
+    <div class="control-group">
+      <label for="sel-key">Key</label>
+      <select id="sel-key">
+        <option>C</option>
+        <option>D</option>
+        <option>E</option>
+        <option>F</option>
+        <option>G</option>
+        <option>A</option>
+        <option>B</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label for="sel-scale">Scale</label>
+      <select id="sel-scale">
+        <option value="major">Major</option>
+        <option value="minor">Minor</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label for="sel-mood">Mood</label>
+      <select id="sel-mood"></select>
+    </div>
+  </div>
+  <button class="btn-generate" id="btn-generate">Generate Progression</button>
+</div>
+
+<div class="output">
+  <div class="meta" id="meta">
+    <div class="meta-title" id="meta-title"></div>
+    <div class="meta-formula" id="meta-formula"></div>
+  </div>
+
+  <div id="chord-area">
+    <div class="placeholder">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 18V5l12-2v13"/>
+        <circle cx="6" cy="18" r="3"/>
+        <circle cx="18" cy="16" r="3"/>
+      </svg>
+      <p>Choose a key, scale, and mood — then generate</p>
+    </div>
+  </div>
+
+  <button class="btn-play" id="btn-play" disabled>
+    <svg class="play-icon" viewBox="0 0 24 24" fill="currentColor" width="17" height="17">
+      <path d="M8 5v14l11-7z"/>
+    </svg>
+    <div class="wave-bars">
+      <div class="wave-bar"></div>
+      <div class="wave-bar"></div>
+      <div class="wave-bar"></div>
+      <div class="wave-bar"></div>
+      <div class="wave-bar"></div>
+    </div>
+    <span id="play-label">Play Progression</span>
+  </button>
+</div>
+
+<script>
+(() => {
+  // ── Music Theory ───────────────────────────────────────────────────────────
+
+  const CHROMATIC = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+
+  const NOTE_IDX = { C:0, D:2, E:4, F:5, G:7, A:9, B:11 };
+
+  // Semitone intervals from root for each scale degree (7 degrees)
+  const SCALE_INTERVALS = {
+    major: [0, 2, 4, 5, 7, 9, 11],
+    minor: [0, 2, 3, 5, 7, 8, 10]
+  };
+
+  // Mood options per scale
+  const MOODS = {
+    major: ['Happy', 'Chill'],
+    minor: ['Sad',   'Tense']
+  };
+
+  // Progressions: degrees are 0-indexed scale degree positions
+  const PROGRESSIONS = {
+    'major-Happy': {
+      formula:  'I  –  IV  –  V  –  I',
+      numerals: ['I', 'IV', 'V', 'I'],
+      chords:   [[0,'major'], [3,'major'], [4,'major'], [0,'major']]
+    },
+    'major-Chill': {
+      formula:  'I  –  V  –  vi  –  IV',
+      numerals: ['I', 'V', 'vi', 'IV'],
+      chords:   [[0,'major'], [4,'major'], [5,'minor'], [3,'major']]
+    },
+    'minor-Sad': {
+      formula:  'i  –  VI  –  III  –  VII',
+      numerals: ['i', 'VI', 'III', 'VII'],
+      chords:   [[0,'minor'], [5,'major'], [2,'major'], [6,'major']]
+    },
+    'minor-Tense': {
+      formula:  'i  –  II  –  v  –  i',
+      numerals: ['i', 'II', 'v', 'i'],
+      chords:   [[0,'minor'], [1,'major'], [4,'minor'], [0,'minor']]
+    }
+  };
+
+  function buildChords(key, scale, mood) {
+    const prog  = PROGRESSIONS[`${scale}-${mood}`];
+    const root  = NOTE_IDX[key];
+    const ivls  = SCALE_INTERVALS[scale];
+
+    return prog.chords.map(([degree, quality], i) => {
+      const rootIdx  = (root + ivls[degree]) % 12;
+      const thirdIdx = (rootIdx + (quality === 'major' ? 4 : 3)) % 12;
+      const fifthIdx = (rootIdx + 7) % 12;
+
+      return {
+        displayName: CHROMATIC[rootIdx] + (quality === 'minor' ? 'm' : ''),
+        quality,
+        roman:       prog.numerals[i],
+        notes:       [CHROMATIC[rootIdx], CHROMATIC[thirdIdx], CHROMATIC[fifthIdx]],
+        rootIdx      // 0-11, for audio frequency computation
+      };
+    });
+  }
+
+  // ── Web Audio ──────────────────────────────────────────────────────────────
+
+  let audioCtx   = null;
+  let stopNodes  = [];
+  let timerIds   = [];
+  let isPlaying  = false;
+
+  function getCtx() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    return audioCtx;
+  }
+
+  // MIDI note 69 = A4 = 440 Hz
+  // For a given chromatic index (0=C…11=B) at octave 4, MIDI = index + 12*(4+1) = index + 60
+  function midiToHz(midi) {
+    return 440 * Math.pow(2, (midi - 69) / 12);
+  }
+
+  function chordFrequencies(rootIdx, quality) {
+    const baseMidi = rootIdx + 60;          // root at octave 4
+    const thirdInt = quality === 'major' ? 4 : 3;
+    return [
+      midiToHz(baseMidi),
+      midiToHz(baseMidi + thirdInt),
+      midiToHz(baseMidi + 7)
+    ];
+  }
+
+  function scheduleChord(rootIdx, quality, startTime, dur, ctx) {
+    chordFrequencies(rootIdx, quality).forEach(f => {
+      const osc = ctx.createOscillator();
+      const env = ctx.createGain();
+
+      osc.type = 'triangle';
+      osc.frequency.value = f;
+
+      // Attack → sustain → release envelope
+      env.gain.setValueAtTime(0, startTime);
+      env.gain.linearRampToValueAtTime(0.13, startTime + 0.03);
+      env.gain.exponentialRampToValueAtTime(0.07, startTime + 0.5);
+      env.gain.exponentialRampToValueAtTime(0.001, startTime + dur);
+
+      osc.connect(env);
+      env.connect(ctx.destination);
+      osc.start(startTime);
+      osc.stop(startTime + dur + 0.08);
+      stopNodes.push(osc);
+    });
+  }
+
+  function clearTimers() {
+    timerIds.forEach(id => clearTimeout(id));
+    timerIds = [];
+  }
+
+  function killAudio() {
+    stopNodes.forEach(n => { try { n.stop(); } catch (_) {} });
+    stopNodes = [];
+    clearTimers();
+  }
+
+  function setPlayingState(playing) {
+    isPlaying = playing;
+    btnPlay.classList.toggle('playing', playing);
+    playLabel.textContent = playing ? 'Stop' : 'Play Progression';
+  }
+
+  function playProgression(chords) {
+    if (isPlaying) {
+      killAudio();
+      setPlayingState(false);
+      document.querySelectorAll('.chord-card').forEach(c => c.classList.remove('active'));
+      return;
+    }
+
+    const ctx = getCtx();
+    if (ctx.state === 'suspended') ctx.resume();
+
+    setPlayingState(true);
+
+    const CHORD_DUR = 1.3;   // seconds each chord sounds
+    const STEP      = 1.45;  // seconds between chord starts
+    const now       = ctx.currentTime;
+    const cards     = document.querySelectorAll('.chord-card');
+
+    chords.forEach((chord, i) => {
+      scheduleChord(chord.rootIdx, chord.quality, now + i * STEP, CHORD_DUR, ctx);
+
+      const tid = setTimeout(() => {
+        cards.forEach(c => c.classList.remove('active'));
+        if (cards[i]) cards[i].classList.add('active');
+      }, i * STEP * 1000);
+      timerIds.push(tid);
+    });
+
+    const endMs = (chords.length * STEP + 0.4) * 1000;
+    const endId = setTimeout(() => {
+      cards.forEach(c => c.classList.remove('active'));
+      killAudio();
+      setPlayingState(false);
+    }, endMs);
+    timerIds.push(endId);
+  }
+
+  // ── DOM References ─────────────────────────────────────────────────────────
+
+  const selKey     = document.getElementById('sel-key');
+  const selScale   = document.getElementById('sel-scale');
+  const selMood    = document.getElementById('sel-mood');
+  const btnGenerate= document.getElementById('btn-generate');
+  const btnPlay    = document.getElementById('btn-play');
+  const chordArea  = document.getElementById('chord-area');
+  const metaEl     = document.getElementById('meta');
+  const metaTitle  = document.getElementById('meta-title');
+  const metaFormula= document.getElementById('meta-formula');
+  const playLabel  = document.getElementById('play-label');
+
+  let currentChords = null;
+
+  // ── Mood Options ───────────────────────────────────────────────────────────
+
+  function syncMoodOptions() {
+    const moods = MOODS[selScale.value];
+    selMood.innerHTML = moods.map(m => `<option value="${m}">${m}</option>`).join('');
+  }
+
+  selScale.addEventListener('change', () => {
+    syncMoodOptions();
+    // Stop playback if running when scale changes
+    if (isPlaying) {
+      killAudio();
+      setPlayingState(false);
+      document.querySelectorAll('.chord-card').forEach(c => c.classList.remove('active'));
+    }
+  });
+
+  // ── Generate ───────────────────────────────────────────────────────────────
+
+  function renderChords(chords, key, scale, mood) {
+    const prog = PROGRESSIONS[`${scale}-${mood}`];
+    const scaleName = scale.charAt(0).toUpperCase() + scale.slice(1);
+
+    metaTitle.textContent   = `${key} ${scaleName} — ${mood}`;
+    metaFormula.textContent = prog.formula;
+    metaEl.classList.add('show');
+
+    const grid = document.createElement('div');
+    grid.className = 'chord-grid';
+
+    chords.forEach((chord, i) => {
+      const card = document.createElement('div');
+      card.className = 'chord-card';
+      card.innerHTML = `
+        <div class="card-ord">Chord ${i + 1}</div>
+        <div class="card-roman">${chord.roman}</div>
+        <div class="card-name">${chord.displayName}</div>
+        <div class="card-badge ${chord.quality}">${chord.quality}</div>
+        <div class="card-notes">${chord.notes.join(' &middot; ')}</div>
+      `;
+      grid.appendChild(card);
+
+      // Staggered entrance animation
+      requestAnimationFrame(() => {
+        setTimeout(() => card.classList.add('in'), i * 75);
+      });
+    });
+
+    chordArea.innerHTML = '';
+    chordArea.appendChild(grid);
+  }
+
+  btnGenerate.addEventListener('click', () => {
+    if (isPlaying) {
+      killAudio();
+      setPlayingState(false);
+    }
+
+    const key   = selKey.value;
+    const scale = selScale.value;
+    const mood  = selMood.value;
+
+    currentChords = buildChords(key, scale, mood);
+    renderChords(currentChords, key, scale, mood);
+    btnPlay.disabled = false;
+  });
+
+  btnPlay.addEventListener('click', () => {
+    if (currentChords) playProgression(currentChords);
+  });
+
+  // ── Init ───────────────────────────────────────────────────────────────────
+  syncMoodOptions();
+})();
+</script>
+</body>
+</html>

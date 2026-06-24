@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Chord Lab Pro</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
 <style>
 :root{
   --bg:#08080f;--bg2:#0f0f1d;--bg3:#151528;--bg4:#1b1b32;
@@ -23,7 +22,6 @@ select{padding:5px 8px;appearance:none;background-image:url("data:image/svg+xml,
 select:focus,input:focus,textarea:focus{outline:none;border-color:var(--p)}
 ::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:var(--bg2)}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
 
-/* Loading overlay */
 #loading-overlay{position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;align-items:center;justify-content:center;transition:opacity .5s}
 .load-box{text-align:center;display:flex;flex-direction:column;align-items:center;gap:18px;padding:40px}
 .load-logo{font-size:52px;line-height:1;margin-bottom:4px}
@@ -31,9 +29,12 @@ select:focus,input:focus,textarea:focus{outline:none;border-color:var(--p)}
 .load-sub{font-size:14px;color:var(--txt2)}
 .btn-launch{padding:14px 40px;border-radius:12px;background:linear-gradient(135deg,var(--pd),var(--p));color:#fff;font-size:16px;font-weight:700;border:none;cursor:pointer;box-shadow:0 8px 32px rgba(139,92,246,.35);transition:.2s;letter-spacing:.02em}
 .btn-launch:hover{transform:translateY(-2px);box-shadow:0 12px 40px rgba(139,92,246,.45)}
+.btn-test{padding:10px 24px;border-radius:var(--r);background:var(--bg4);border:1.5px solid var(--border2);color:var(--txt2);font-size:14px;font-weight:600;cursor:pointer;transition:.15s}
+.btn-test:hover{border-color:var(--grn);color:var(--grn)}
+.load-btns{display:flex;gap:12px;flex-wrap:wrap;justify-content:center}
 .load-spinner{width:44px;height:44px;border:3px solid var(--border2);border-top-color:var(--p);border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.load-bar-wrap{width:240px;height:4px;background:var(--border2);border-radius:2px;overflow:hidden}
+.load-bar-wrap{width:260px;height:4px;background:var(--border2);border-radius:2px;overflow:hidden}
 .load-bar-fill{height:100%;background:linear-gradient(90deg,var(--pd),var(--p));border-radius:2px;width:0;transition:width .3s}
 .load-pct{font-size:12px;color:var(--txt3)}
 
@@ -165,14 +166,20 @@ input[type=range]::-webkit-slider-thumb:hover{background:var(--pl);transform:sca
     <div id="load-start-view">
       <div class="load-logo">🎸</div>
       <div class="load-title">Chord Lab Pro</div>
-      <div class="load-sub">Real instrument samples · Real music production</div>
-      <button class="btn-launch" id="load-start-btn">▶ Launch App</button>
+      <div class="load-sub">Real instrument samples from FluidR3_GM</div>
+      <div style="height:12px"></div>
+      <div class="load-btns">
+        <button class="btn-test" id="btn-test-sound">🔊 Test Sound</button>
+        <button class="btn-launch" id="btn-launch">▶ Launch App</button>
+      </div>
+      <div style="font-size:11px;color:var(--txt3);margin-top:8px">Click Test Sound first to verify audio is working</div>
     </div>
     <div id="load-progress-view" style="display:none;flex-direction:column;align-items:center;gap:16px">
       <div class="load-spinner"></div>
       <div class="load-title" style="font-size:22px">Loading Instruments</div>
       <div class="load-bar-wrap"><div class="load-bar-fill" id="load-fill"></div></div>
-      <div class="load-pct" id="load-status">Initializing...</div>
+      <div class="load-pct" id="load-status">Downloading samples...</div>
+      <div style="font-size:11px;color:var(--txt3)">First load may take 30–60 seconds</div>
     </div>
   </div>
 </div>
@@ -324,9 +331,357 @@ input[type=range]::-webkit-slider-thumb:hover{background:var(--pl);transform:sca
     </div>
   </div>
 </div>
-</div>
+</div><!-- #app -->
 
 <script>
+// ═══════════════════════════════
+// STEP 1 — AUDIO CONTEXT + TEST BEEP
+// ═══════════════════════════════
+const AudioContext = window.AudioContext || window.webkitAudioContext;
+const ctx = new AudioContext();
+
+function testBeep() {
+  if (ctx.state === 'suspended') ctx.resume();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.frequency.value = 440;
+  gain.gain.setValueAtTime(0.5, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + 1);
+}
+
+// Master bus (all sounds route here; recording taps this)
+const masterGain = ctx.createGain();
+masterGain.gain.value = 0.85;
+masterGain.connect(ctx.destination);
+
+const streamDest = ctx.createMediaStreamDestination();
+masterGain.connect(streamDest);
+
+// ═══════════════════════════════
+// STEP 2 — LOAD SAMPLES FROM CDN
+// ═══════════════════════════════
+const SOUNDFONT_URL = 'https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/';
+
+async function loadInstrument(instrumentName) {
+  const url = `${SOUNDFONT_URL}${instrumentName}-mp3.js`;
+  return new Promise((resolve) => {
+    const script = document.createElement('script');
+    script.src = url;
+    script.onload = () => {
+      const key = instrumentName.replace(/-/g, '_');
+      // Try direct window var first, then MIDI.Soundfont namespace
+      resolve(window[key] || window.MIDI?.Soundfont?.[key] || null);
+    };
+    script.onerror = () => resolve(null);
+    document.head.appendChild(script);
+  });
+}
+
+// Instruments to load (user's exact list)
+const SF_INSTRUMENTS = [
+  'acoustic_guitar_steel',
+  'acoustic_guitar_nylon',
+  'electric_guitar_clean',
+  'distortion_guitar',
+  'bright_acoustic_piano',
+  'electric_piano_1',
+  'alto_sax',
+  'tenor_sax',
+];
+
+// Map our internal IDs to soundfont names
+const SF_MAP = {
+  'acoustic':  'acoustic_guitar_steel',
+  'nylon':     'acoustic_guitar_nylon',
+  'elec-cln':  'electric_guitar_clean',
+  'elec-crn':  'electric_guitar_clean',
+  'metal':     'distortion_guitar',
+  'jazz-gtr':  'electric_guitar_clean',
+  'bass-gtr':  'acoustic_guitar_steel',
+  '12string':  'acoustic_guitar_steel',
+  'grand':     'bright_acoustic_piano',
+  'upright':   'bright_acoustic_piano',
+  'rhodes':    'electric_piano_1',
+  'honky':     'bright_acoustic_piano',
+  'synth-k':   'electric_piano_1',
+  'organ':     'bright_acoustic_piano',
+  'hpscd':     'bright_acoustic_piano',
+  'toypno':    'electric_piano_1',
+  'alto-sax':  'alto_sax',
+  'tenor-sax': 'tenor_sax',
+  'bari-sax':  'tenor_sax',
+  'synth-b':   null, // synthesized
+  'uprt-b':    'acoustic_guitar_steel',
+};
+
+// MIDI note targets to decode per instrument type (reduces decode time)
+const MIDI_TARGETS = {
+  guitar: [40,44,48,52,56,60,64,68,72,76],
+  piano:  [36,40,44,48,52,56,60,64,68,72,76,80,84],
+  bass:   [28,32,36,40,44,48,52],
+  sax:    [44,48,52,56,60,64,68,72,76],
+};
+function midiTargetsForInstr(instrId) {
+  const t = instrById(instrId).t;
+  return MIDI_TARGETS[t] || MIDI_TARGETS.guitar;
+}
+
+// note name → MIDI number
+const NOTE_SEMI = {C:0,'C#':1,Db:1,D:2,'D#':3,Eb:3,E:4,F:5,'F#':6,Gb:6,G:7,'G#':8,Ab:8,A:9,'A#':10,Bb:10,B:11};
+function noteNameToMidi(name) {
+  const m = name.match(/^([A-G]#?b?)(-?\d+)$/);
+  if (!m) return -1;
+  return (NOTE_SEMI[m[1]] ?? 0) + (parseInt(m[2]) + 1) * 12;
+}
+
+// Raw soundfont data cache (sfName → raw {noteName: base64url})
+const sfDataCache = {};
+// Decoded AudioBuffer cache (sfName + '-' + type → {midiNum: AudioBuffer})
+const sfBufCache = {};
+// Per-instrId buffers (instrId → {midiNum: AudioBuffer})
+const instrBuffers = {};
+
+async function decodeSoundfontSubset(sfName, type) {
+  const cacheKey = sfName + '-' + type;
+  if (sfBufCache[cacheKey]) return sfBufCache[cacheKey];
+
+  const data = sfDataCache[sfName];
+  if (!data) return {};
+
+  const targets = MIDI_TARGETS[type] || MIDI_TARGETS.guitar;
+  const noteNames = Object.keys(data);
+  const noteMidis = noteNames.map(noteNameToMidi);
+  const chosen = new Set();
+
+  // For each target MIDI, pick the closest available note
+  targets.forEach(target => {
+    let best = -1, bestDiff = Infinity;
+    noteMidis.forEach((m, i) => {
+      if (m < 0) return;
+      const d = Math.abs(m - target);
+      if (d < bestDiff) { bestDiff = d; best = i; }
+    });
+    if (best >= 0) chosen.add(noteNames[best]);
+  });
+
+  const buffers = {};
+  await Promise.all([...chosen].map(async name => {
+    try {
+      const b64url = data[name];
+      if (!b64url || typeof b64url !== 'string') return;
+      const b64 = b64url.includes(',') ? b64url.split(',')[1] : b64url;
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const buf = await ctx.decodeAudioData(bytes.buffer.slice(0));
+      buffers[noteNameToMidi(name)] = buf;
+    } catch (e) { /* skip failed decode */ }
+  }));
+
+  sfBufCache[cacheKey] = buffers;
+  return buffers;
+}
+
+async function initInstrBuffers(instrId) {
+  if (instrBuffers[instrId]) return;
+  const sfName = SF_MAP[instrId];
+  if (!sfName) { instrBuffers[instrId] = {}; return; }
+  const type = instrById(instrId).t;
+  instrBuffers[instrId] = await decodeSoundfontSubset(sfName, type);
+}
+
+async function preloadAll(onProgress) {
+  let done = 0;
+  const total = SF_INSTRUMENTS.length;
+
+  // Load all SF JS files in parallel
+  await Promise.all(SF_INSTRUMENTS.map(async sf => {
+    const data = await loadInstrument(sf);
+    sfDataCache[sf] = data;
+    done++;
+    onProgress?.(done / (total * 2), `Loaded ${sf.replace(/_/g,' ')}`);
+  }));
+
+  // Decode buffers for each instrument
+  const instrIds = Object.keys(SF_MAP).filter(id => SF_MAP[id]);
+  const decoded = new Set();
+  for (const id of instrIds) {
+    const sf = SF_MAP[id];
+    const type = instrById(id).t;
+    const key = sf + '-' + type;
+    if (!decoded.has(key)) {
+      decoded.add(key);
+      await decodeSoundfontSubset(sf, type);
+      done++;
+      onProgress?.(Math.min(0.99, (SF_INSTRUMENTS.length + decoded.size) / (total * 2)), `Decoded ${instrById(id).n}`);
+    }
+    instrBuffers[id] = sfBufCache[key] || {};
+  }
+  instrBuffers['synth-b'] = {}; // synthesized, no samples
+  onProgress?.(1, 'Ready!');
+}
+
+// ═══════════════════════════════
+// STEP 3 — PLAY NOTE FROM SAMPLE
+// ═══════════════════════════════
+function playNote(audioBuffer, playbackRate, time, duration, vol) {
+  if (!audioBuffer) return;
+  const source = ctx.createBufferSource();
+  source.buffer = audioBuffer;
+  source.playbackRate.value = playbackRate || 1;
+  const gain = ctx.createGain();
+  source.connect(gain);
+  gain.connect(masterGain);
+  gain.gain.setValueAtTime(vol ?? 0.7, time);
+  gain.gain.exponentialRampToValueAtTime(0.001, time + duration);
+  source.start(time);
+  source.stop(time + duration + 0.1);
+}
+
+function playMidiNote(instrId, midiNote, time, duration, vol) {
+  const bufs = instrBuffers[instrId];
+  if (!bufs || Object.keys(bufs).length === 0) {
+    // Fallback synthesizer
+    const freq = 440 * Math.pow(2, (midiNote - 69) / 12);
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.value = freq;
+    osc.connect(g); g.connect(masterGain);
+    g.gain.setValueAtTime(vol ?? 0.4, time);
+    g.gain.exponentialRampToValueAtTime(0.001, time + duration);
+    osc.start(time); osc.stop(time + duration + 0.1);
+    return;
+  }
+  const midis = Object.keys(bufs).map(Number);
+  let closest = midis[0], minDiff = Infinity;
+  for (const m of midis) {
+    const d = Math.abs(m - midiNote);
+    if (d < minDiff) { minDiff = d; closest = m; }
+  }
+  const playbackRate = Math.pow(2, (midiNote - closest) / 12);
+  playNote(bufs[closest], playbackRate, time, duration, vol ?? 0.7);
+}
+
+// Convert chord to MIDI note numbers
+function chordMidiNotes(rootKeyIdx, type, octave) {
+  return (CT[type] || CT['maj']).iv.map(iv => {
+    const total = rootKeyIdx + iv;
+    return ((total % 12) + 12) % 12 + 12 * (octave + 1 + Math.floor(total / 12));
+  });
+}
+
+// ═══════════════════════════════
+// STEP 4 — DRUMS (exact patterns)
+// ═══════════════════════════════
+function playKick(time, vol) {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.connect(gain);
+  gain.connect(masterGain);
+  osc.frequency.setValueAtTime(150, time);
+  osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.5);
+  gain.gain.setValueAtTime(vol ?? 1, time);
+  gain.gain.exponentialRampToValueAtTime(0.001, time + 0.5);
+  osc.start(time);
+  osc.stop(time + 0.5);
+}
+
+function playSnare(time, vol) {
+  const noise = ctx.createBufferSource();
+  const buffer = ctx.createBuffer(1, ctx.sampleRate * 0.2, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < buffer.length; i++) data[i] = Math.random() * 2 - 1;
+  noise.buffer = buffer;
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'highpass';
+  filter.frequency.value = 1000;
+  const gain = ctx.createGain();
+  noise.connect(filter);
+  filter.connect(gain);
+  gain.connect(masterGain);
+  gain.gain.setValueAtTime(vol ?? 0.8, time);
+  gain.gain.exponentialRampToValueAtTime(0.001, time + 0.2);
+  noise.start(time);
+  noise.stop(time + 0.2);
+}
+
+function playHihat(time, open, vol) {
+  const noise = ctx.createBufferSource();
+  const buffer = ctx.createBuffer(1, ctx.sampleRate * 0.05, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < buffer.length; i++) data[i] = Math.random() * 2 - 1;
+  noise.buffer = buffer;
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'highpass';
+  filter.frequency.value = 7000;
+  const gain = ctx.createGain();
+  noise.connect(filter);
+  filter.connect(gain);
+  gain.connect(masterGain);
+  gain.gain.setValueAtTime(vol ?? 0.3, time);
+  gain.gain.exponentialRampToValueAtTime(0.001, time + (open ? 0.3 : 0.05));
+  noise.start(time);
+  noise.stop(time + 0.5);
+}
+
+function playTom(time, vol) {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.connect(gain); gain.connect(masterGain);
+  osc.frequency.setValueAtTime(80, time);
+  osc.frequency.exponentialRampToValueAtTime(40, time + 0.3);
+  gain.gain.setValueAtTime(vol ?? 0.7, time);
+  gain.gain.exponentialRampToValueAtTime(0.001, time + 0.3);
+  osc.start(time); osc.stop(time + 0.3);
+}
+
+function playCrash(time, vol) {
+  const noise = ctx.createBufferSource();
+  const buffer = ctx.createBuffer(1, ctx.sampleRate * 1.5, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < buffer.length; i++) data[i] = Math.random() * 2 - 1;
+  noise.buffer = buffer;
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'bandpass'; filter.frequency.value = 5000; filter.Q.value = 0.5;
+  const gain = ctx.createGain();
+  noise.connect(filter); filter.connect(gain); gain.connect(masterGain);
+  gain.gain.setValueAtTime(vol ?? 0.4, time);
+  gain.gain.exponentialRampToValueAtTime(0.001, time + 1.5);
+  noise.start(time); noise.stop(time + 1.5);
+}
+
+function playRide(time, vol) {
+  const noise = ctx.createBufferSource();
+  const buffer = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < buffer.length; i++) data[i] = Math.random() * 2 - 1;
+  noise.buffer = buffer;
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'bandpass'; filter.frequency.value = 8000; filter.Q.value = 1;
+  const gain = ctx.createGain();
+  noise.connect(filter); filter.connect(gain); gain.connect(masterGain);
+  gain.gain.setValueAtTime(vol ?? 0.2, time);
+  gain.gain.exponentialRampToValueAtTime(0.001, time + 0.5);
+  noise.start(time); noise.stop(time + 0.5);
+}
+
+function triggerDrum(type, time, vol) {
+  switch (type) {
+    case 'k':  playKick(time, (vol ?? 1) * 1.1); break;
+    case 'sn': playSnare(time, (vol ?? 1) * 0.8); break;
+    case 'hh': playHihat(time, false, (vol ?? 1) * 0.3); break;
+    case 'oh': playHihat(time, true,  (vol ?? 1) * 0.28); break;
+    case 'tm': playTom(time,   (vol ?? 1) * 0.7); break;
+    case 'cr': playCrash(time, (vol ?? 1) * 0.4); break;
+    case 'rd': playRide(time,  (vol ?? 1) * 0.2); break;
+  }
+}
+
 // ═══════════════════════════════
 // DATA
 // ═══════════════════════════════
@@ -541,435 +896,6 @@ function getPatsForInstr(instrId){
   return[];
 }
 
-// ═══════════════════════════════
-// TONE.JS INFRASTRUCTURE
-// ═══════════════════════════════
-const CDN_BASE='https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM';
-function mkUrls(notes){return Object.fromEntries(notes.map(n=>[n,n+'.mp3']));}
-
-const P_NOTES=['C2','E2','Ab2','C3','E3','Ab3','C4','E4','Ab4','C5','E5','Ab5'];
-const G_NOTES=['E3','Ab3','C4','E4','Ab4','C5','E5'];
-const B_NOTES=['E1','Ab1','C2','E2','Ab2','C3'];
-const S_NOTES=['Ab3','C4','E4','Ab4','C5'];
-
-const INSTR_CFG={
-  'acoustic': {folder:'acoustic_guitar_steel',  notes:G_NOTES},
-  'nylon':    {folder:'acoustic_guitar_nylon',  notes:G_NOTES},
-  'elec-cln': {folder:'electric_guitar_clean',  notes:G_NOTES},
-  'elec-crn': {folder:'overdriven_guitar',      notes:G_NOTES},
-  'metal':    {folder:'distortion_guitar',      notes:G_NOTES},
-  'jazz-gtr': {folder:'electric_guitar_jazz',   notes:G_NOTES},
-  'bass-gtr': {folder:'acoustic_bass',          notes:B_NOTES},
-  '12string': {folder:'guitar_harmonics',       notes:G_NOTES},
-  'grand':    {folder:'acoustic_grand_piano',   notes:P_NOTES},
-  'upright':  {folder:'bright_acoustic_piano',  notes:P_NOTES},
-  'rhodes':   {folder:'electric_piano_1',       notes:P_NOTES},
-  'honky':    {folder:'honky_tonk_piano',       notes:P_NOTES},
-  'synth-k':  {folder:'pad_2_warm',             notes:P_NOTES},
-  'organ':    {folder:'church_organ',           notes:P_NOTES},
-  'hpscd':    {folder:'harpsichord',            notes:P_NOTES},
-  'toypno':   {folder:'music_box',              notes:P_NOTES},
-  'alto-sax': {folder:'alto_sax',              notes:S_NOTES},
-  'tenor-sax':{folder:'tenor_sax',             notes:S_NOTES},
-  'bari-sax': {folder:'baritone_sax',          notes:S_NOTES},
-  'synth-b':  {folder:'synth_bass_1',          notes:B_NOTES},
-  'uprt-b':   {folder:'acoustic_bass',         notes:B_NOTES},
-};
-
-let masterBus=null, drumBus=null, masterReverb=null, streamDest=null;
-const DRUMS={};
-const samplerCache={};
-const loadingMap={};
-
-function initToneAudio(){
-  if(masterBus)return;
-  masterBus=new Tone.Gain(0.82);
-  masterReverb=new Tone.Reverb({decay:1.4,wet:0.08});
-  masterBus.chain(masterReverb,Tone.Destination);
-
-  drumBus=new Tone.Gain(0.8);
-  drumBus.connect(masterBus);
-
-  DRUMS.kick=new Tone.MembraneSynth({
-    pitchDecay:.06,octaves:6,
-    envelope:{attack:.001,decay:.38,sustain:0,release:.1}
-  }).connect(drumBus);
-  DRUMS.snare=new Tone.NoiseSynth({
-    noise:{type:'white'},
-    envelope:{attack:.001,decay:.13,sustain:0,release:.04}
-  }).connect(drumBus);
-  DRUMS.hihat=new Tone.MetalSynth({
-    frequency:400,harmonicity:5.1,modulationIndex:32,resonance:4000,octaves:1.5,
-    envelope:{attack:.001,decay:.04,release:.01}
-  }).connect(drumBus);
-  DRUMS.openHat=new Tone.MetalSynth({
-    frequency:400,harmonicity:5.1,modulationIndex:32,resonance:4000,octaves:1.5,
-    envelope:{attack:.001,decay:.28,release:.05}
-  }).connect(drumBus);
-  DRUMS.tom=new Tone.MembraneSynth({
-    pitchDecay:.09,octaves:4,
-    envelope:{attack:.001,decay:.22,sustain:0,release:.05}
-  }).connect(drumBus);
-  DRUMS.crash=new Tone.MetalSynth({
-    frequency:300,harmonicity:5.1,modulationIndex:64,resonance:3000,octaves:2,
-    envelope:{attack:.001,decay:1.4,release:.3}
-  }).connect(drumBus);
-  DRUMS.ride=new Tone.MetalSynth({
-    frequency:500,harmonicity:5.1,modulationIndex:48,resonance:5000,octaves:1,
-    envelope:{attack:.001,decay:.5,release:.1}
-  }).connect(drumBus);
-
-  DRUMS.kick.volume.value=3;
-  DRUMS.snare.volume.value=1;
-  DRUMS.hihat.volume.value=-5;
-  DRUMS.openHat.volume.value=-5;
-  DRUMS.crash.volume.value=-4;
-  DRUMS.ride.volume.value=-7;
-
-  // Recording tap
-  const rawCtx=Tone.context.rawContext;
-  streamDest=rawCtx.createMediaStreamDestination();
-  masterBus.connect(streamDest);
-}
-
-function loadInstrument(instrId){
-  if(samplerCache[instrId])return Promise.resolve(samplerCache[instrId]);
-  if(loadingMap[instrId])return loadingMap[instrId];
-  const cfg=INSTR_CFG[instrId];
-  if(!cfg)return Promise.reject(new Error('No cfg: '+instrId));
-  const p=new Promise((resolve)=>{
-    const s=new Tone.Sampler({
-      urls:mkUrls(cfg.notes),
-      baseUrl:CDN_BASE+'/'+cfg.folder+'-mp3/',
-      onload:()=>{samplerCache[instrId]=s;delete loadingMap[instrId];resolve(s);},
-      onerror:()=>{samplerCache[instrId]=s;delete loadingMap[instrId];resolve(s);}
-    });
-  });
-  loadingMap[instrId]=p;
-  return p;
-}
-
-async function preloadAllInstruments(onProgress){
-  const ids=Object.keys(INSTR_CFG);
-  let loaded=0;
-  await Promise.all(ids.map(id=>
-    loadInstrument(id).then(()=>{loaded++;onProgress?.(loaded/ids.length,instrById(id).n);})
-               .catch(()=>{loaded++;onProgress?.(loaded/ids.length,'');})
-  ));
-}
-
-// ═══════════════════════════════
-// NOTE UTILITIES
-// ═══════════════════════════════
-const FLAT_NOTES=['C','Db','D','Eb','E','F','Gb','G','Ab','A','Bb','B'];
-
-function noteFromIdx(rootIdx,interval,octave){
-  const total=rootIdx+interval;
-  const idx=((total%12)+12)%12;
-  return FLAT_NOTES[idx]+(octave+Math.floor(total/12));
-}
-
-function chordNoteNames(rootIdx,type,octave){
-  return(CT[type]||CT['maj']).iv.map(iv=>noteFromIdx(rootIdx,iv,octave));
-}
-
-// ═══════════════════════════════
-// DRUM TRIGGERING
-// ═══════════════════════════════
-function triggerDrum(type,time){
-  if(!DRUMS.kick)return;
-  switch(type){
-    case 'k':  DRUMS.kick.triggerAttackRelease('C1','8n',time,1);break;
-    case 'sn': DRUMS.snare.triggerAttackRelease('8n',time,0.9);break;
-    case 'hh': DRUMS.hihat.triggerAttackRelease('32n',time,0.6);break;
-    case 'oh': DRUMS.openHat.triggerAttackRelease('8n',time,0.5);break;
-    case 'tm': DRUMS.tom.triggerAttackRelease('G2','8n',time,0.8);break;
-    case 'cr': DRUMS.crash.triggerAttackRelease('2n',time,0.4);break;
-    case 'rd': DRUMS.ride.triggerAttackRelease('8n',time,0.35);break;
-  }
-}
-
-// ═══════════════════════════════
-// CHORD STROKE PLAYBACK
-// ═══════════════════════════════
-function playChordStroke(sampler,stroke,chord,instr,time){
-  if(!sampler||!chord)return;
-  const bpm=Tone.Transport.bpm.value||100;
-  const stepSec=60/bpm/4;
-  const durSec=Math.max(0.05,(stroke.dur??4)*stepSec*0.9);
-  const vel=stroke.vel??1;
-  const SPREAD=instr.t==='piano'?0.008:0.018;
-  const notes=chordNoteNames(chord.root,chord.type,instr.oct);
-
-  if(stroke.a==='b'){
-    sampler.triggerAttackRelease(noteFromIdx(chord.root,0,instr.oct-1),durSec,time,vel*0.85);
-  } else if(stroke.a===-1||stroke.a===undefined){
-    if(stroke.muted){
-      notes.slice(0,4).forEach((n,i)=>sampler.triggerAttackRelease(n,0.06,time+i*0.012,vel*0.5));
-    } else {
-      notes.forEach((n,i)=>sampler.triggerAttackRelease(n,durSec,time+i*SPREAD,Math.max(0.1,vel*(1-i*0.04))));
-    }
-  } else if(typeof stroke.a==='number'&&stroke.a>=0){
-    sampler.triggerAttackRelease(notes[Math.min(stroke.a,notes.length-1)],durSec,time,vel);
-  }
-}
-
-// ═══════════════════════════════
-// TRACK PLAYER (Tone.Part based)
-// ═══════════════════════════════
-class TrackPlayer{
-  constructor(cfg){
-    this.cfg=cfg;
-    this.part=null;
-    this._gain=null;
-    this._gainIsExternal=false;
-    this._sampler=null;
-  }
-
-  async prepare(){
-    const{instrId,pattern,chords,vol,gainNode,onChordChange}=this.cfg;
-    const instr=instrById(instrId);
-    const isDrums=instr.t==='drums';
-    const steps=pattern.steps||16;
-    const tps=Tone.Transport.PPQ/4; // ticks per 16th-note step
-
-    if(!isDrums){
-      if(gainNode){
-        this._gain=gainNode;this._gainIsExternal=true;
-      } else {
-        this._gain=new Tone.Gain(vol??0.82);
-        this._gain.connect(masterBus);
-        this._gainIsExternal=false;
-      }
-      try{
-        this._sampler=await loadInstrument(instrId);
-        this._sampler.connect(this._gain);
-      } catch(e){console.warn('Load failed:',instrId);return;}
-    }
-
-    const events=[];
-
-    if(isDrums){
-      for(let s=0;s<steps;s++){
-        const hits=['k','sn','hh','oh','tm','cr','rd'].filter(h=>pattern[h]?.[s]);
-        if(hits.length)events.push([s*tps+'i',{hits}]);
-      }
-      this.part=new Tone.Part((time,{hits})=>{
-        hits.forEach(h=>triggerDrum(h,time));
-      },events);
-      this.part.loop=true;
-      this.part.loopEnd=steps*tps+'i';
-    } else {
-      const ca=chords&&chords.length?chords:[];
-      if(!ca.length)return;
-      const sampler=this._sampler;
-      ca.forEach((chord,ci)=>{
-        pattern.strokes.forEach((stroke,si)=>{
-          events.push([(ci*steps+stroke.step)*tps+'i',{chord,stroke,si,ci}]);
-        });
-      });
-      this.part=new Tone.Part((time,{chord,stroke,si,ci})=>{
-        if(si===0&&onChordChange)setTimeout(()=>onChordChange(ci),0);
-        if(sampler)playChordStroke(sampler,stroke,chord,instr,time);
-      },events);
-      this.part.loop=true;
-      this.part.loopEnd=ca.length*steps*tps+'i';
-    }
-
-    this.part.start(0);
-  }
-
-  async start(){
-    await this.prepare();
-    if(Tone.Transport.state!=='started')Tone.Transport.start('+0.05');
-  }
-
-  stop(){
-    if(this.part){this.part.stop();this.part.dispose();this.part=null;}
-    if(this._sampler&&this._gain){
-      try{this._sampler.disconnect(this._gain);}catch(e){}
-    }
-    if(this._gain&&!this._gainIsExternal){this._gain.dispose();}
-    this._gain=null;this._sampler=null;
-  }
-}
-
-// ═══════════════════════════════
-// RECORDING
-// ═══════════════════════════════
-const REC={mr:null,chunks:[],tid:null,active:false,startT:0};
-function startRec(durEl,dlEl,statusEl){
-  if(!streamDest)return;
-  const mime=MediaRecorder.isTypeSupported('audio/webm;codecs=opus')?'audio/webm;codecs=opus':'audio/webm';
-  REC.mr=new MediaRecorder(streamDest.stream,{mimeType:mime});
-  REC.chunks=[];
-  REC.mr.ondataavailable=e=>{if(e.data.size>0)REC.chunks.push(e.data);};
-  REC.mr.onstop=()=>{
-    const blob=new Blob(REC.chunks,{type:'audio/webm'});
-    if(dlEl){dlEl.href=URL.createObjectURL(blob);dlEl.download='chord-session.webm';dlEl.style.display='inline';}
-  };
-  REC.mr.start(100);REC.active=true;REC.startT=Date.now();
-  document.getElementById('rec-pill').classList.add('active');
-  statusEl?.classList.remove('hidden');
-  REC.tid=setInterval(()=>{
-    const s=Math.floor((Date.now()-REC.startT)/1000);
-    const ts=Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
-    document.getElementById('rec-dur').textContent=ts;
-    if(durEl)durEl.textContent=ts;
-  },500);
-}
-function stopRec(){
-  if(!REC.active)return;
-  clearInterval(REC.tid);REC.mr?.stop();REC.active=false;
-  document.getElementById('rec-pill').classList.remove('active');
-}
-
-// ═══════════════════════════════
-// CHORD GENERATION
-// ═══════════════════════════════
-function buildChords(keyIdx,moodKey,progIdx,count){
-  const mood=MOODS[moodKey];if(!mood)return[];
-  const prog=mood.p[progIdx]||mood.p[0];
-  return Array.from({length:count},(_,i)=>{
-    const[semi,type,roman]=prog.c[i%prog.c.length];
-    const root=(keyIdx+semi)%12;
-    return{root,type,roman,label:NOTES[root]+(CT[type]?.s||'')};
-  });
-}
-
-function parseCustom(text){
-  const FM={'Cb':11,'Db':1,'Eb':3,'Fb':4,'Gb':6,'Ab':8,'Bb':10};
-  return text.split(/[,;\n]+/).map(s=>s.trim()).filter(Boolean).map(raw=>{
-    const m=raw.match(/^([A-G][#b]?)/);if(!m)return null;
-    const rn=m[1];
-    let root=FM[rn]??NOTES.indexOf(rn);if(root<0)return null;
-    let s=raw.slice(rn.length),type='maj';
-    if(/^m7b5|^mø/.test(s))type='hdim7';
-    else if(/^min9|^m9/.test(s))type='min9';
-    else if(/^min7|^m7/.test(s))type='min7';
-    else if(/^min6|^m6/.test(s))type='min6';
-    else if(/^maj9/.test(s))type='maj9';
-    else if(/^maj7|^M7/.test(s))type='maj7';
-    else if(/^maj/.test(s))type='maj';
-    else if(/^m(?!aj)/.test(s))type='min';
-    else if(/^dim7|^°7/.test(s))type='dim7';
-    else if(/^dim|^°/.test(s))type='dim';
-    else if(/^aug7|\+7/.test(s))type='aug7';
-    else if(/^aug|\+/.test(s))type='aug';
-    else if(/^sus2/.test(s))type='sus2';
-    else if(/^sus4|^sus/.test(s))type='sus4';
-    else if(/^add9/.test(s))type='add9';
-    else if(/^7sus4/.test(s))type='7sus4';
-    else if(/^7b9/.test(s))type='7b9';
-    else if(/^7#9|^7sh9/.test(s))type='7sh9';
-    else if(/^7/.test(s))type='7';
-    else if(/^6/.test(s))type='6';
-    else if(/^9/.test(s))type='9';
-    else if(/^5/.test(s))type='5';
-    return{root,type,roman:'',label:NOTES[root]+(CT[type]?.s||'')};
-  }).filter(Boolean);
-}
-
-// ═══════════════════════════════
-// STATE
-// ═══════════════════════════════
-const S={
-  gen:{key:0,scale:'Major',mood:'Happy',progIdx:0,count:4,bpm:100,instrId:'acoustic',patId:'alldown',chords:[],player:null},
-  cust:{scale:'Major',bpm:100,instrId:'acoustic',patId:'alldown',chords:[],player:null},
-  mt:{key:0,scale:'Major',mood:'Happy',progIdx:0,chords:[],tracks:[],solo:null,playing:false},
-  duet:{key:0,scale:'Major',mood:'Happy',progIdx:0,bpm:100,gtrId:'acoustic',gtrPatId:'alldown',pnoId:'grand',pnoPatId:'pi-block',mix:'both',chords:[],gtrPlayer:null,pnoPlayer:null},
-};
-const TRACK_COLORS=['#8b5cf6','#f472b6','#34d399','#60a5fa','#fbbf24','#fb923c','#a78bfa','#4ade80'];
-let trackCounter=0;
-
-// ═══════════════════════════════
-// UI HELPERS
-// ═══════════════════════════════
-function makeInstrGrid(containerId,filterFn,selId,onSelect){
-  const container=document.getElementById(containerId);if(!container)return;
-  container.innerHTML='';
-  const filtered=INSTR.filter(filterFn||Boolean);
-  const groups={};
-  filtered.forEach(i=>(groups[i.g]||(groups[i.g]=[])).push(i));
-  Object.entries(groups).forEach(([grp,instrs])=>{
-    const lbl=document.createElement('div');lbl.className='instr-group-label';lbl.textContent=grp;
-    container.appendChild(lbl);
-    instrs.forEach(instr=>{
-      const card=document.createElement('div');
-      card.className='instr-card'+(instr.id===selId?' sel':'');
-      card.dataset.id=instr.id;
-      card.innerHTML=`<div class="instr-icon">${instr.icon}</div><div class="instr-name">${instr.n}</div><div class="instr-desc">${instr.d}</div>`;
-      card.addEventListener('click',()=>{
-        container.querySelectorAll('.instr-card').forEach(c=>c.classList.remove('sel'));
-        card.classList.add('sel');onSelect(instr.id);
-      });
-      container.appendChild(card);
-    });
-  });
-}
-
-function populatePatSelect(selId,instrId,curPatId){
-  const sel=document.getElementById(selId);if(!sel)return;
-  const pats=getPatsForInstr(instrId);
-  sel.innerHTML=pats.map(p=>`<option value="${p.id}"${p.id===curPatId?' selected':''}>${p.n}</option>`).join('');
-  if(!pats.find(p=>p.id===curPatId)&&pats.length)sel.value=pats[0].id;
-}
-
-function populateKeySelect(selId,keyIdx){
-  const sel=document.getElementById(selId);if(!sel)return;
-  sel.innerHTML=NOTE_DISP.map((n,i)=>`<option value="${i}"${i===keyIdx?' selected':''}>${n}</option>`).join('');
-}
-
-function populateScaleSelect(selId,curScale){
-  const sel=document.getElementById(selId);if(!sel)return;
-  sel.innerHTML=SCALE_NAMES.map(s=>`<option value="${s}"${s===curScale?' selected':''}>${s}</option>`).join('');
-}
-
-function populateMoodForScale(moodSelId,scale,curMood){
-  const sel=document.getElementById(moodSelId);if(!sel)return;
-  const order=SCALES[scale]?.moodOrder||Object.keys(MOODS);
-  sel.innerHTML=order.map(m=>`<option value="${m}"${m===curMood?' selected':''}>${m}</option>`).join('');
-}
-
-function populateMtVarSelect(){
-  const sel=document.getElementById('mt-var');if(!sel)return;
-  sel.innerHTML=(MOODS[S.mt.mood]?.p||[]).map((p,i)=>`<option value="${i}"${i===S.mt.progIdx?' selected':''}>${p.n}</option>`).join('');
-}
-
-function populateDuetVarSelect(){
-  const sel=document.getElementById('duet-var');if(!sel)return;
-  sel.innerHTML=(MOODS[S.duet.mood]?.p||[]).map((p,i)=>`<option value="${i}"${i===S.duet.progIdx?' selected':''}>${p.n}</option>`).join('');
-}
-
-function renderProgVars(containerId,moodKey,selIdx,onClick){
-  const c=document.getElementById(containerId);if(!c)return;
-  c.innerHTML='';
-  (MOODS[moodKey]?.p||[]).forEach((p,i)=>{
-    const btn=document.createElement('button');
-    btn.className='prog-var'+(i===selIdx?' sel':'');btn.textContent=p.n;
-    btn.addEventListener('click',()=>{
-      c.querySelectorAll('.prog-var').forEach(b=>b.classList.remove('sel'));
-      btn.classList.add('sel');onClick(i);
-    });
-    c.appendChild(btn);
-  });
-}
-
-function renderChordGrid(containerId,chords){
-  const c=document.getElementById(containerId);if(!c)return;
-  const n=chords.length;
-  c.className='chord-grid '+(n===6?'n6':n===3?'n3':n===8?'n8':n===12?'n12':'n4');
-  c.innerHTML=chords.map((ch,i)=>{
-    const iv=(CT[ch.type]||CT['maj']).iv;
-    const nns=iv.map(s=>NOTES[(ch.root+s)%12]).join(' ');
-    return`<div class="chord-card" data-ci="${i}"><div class="chord-roman">${ch.roman||''}</div><div style="display:flex;align-items:baseline;gap:2px"><span class="chord-root">${NOTES[ch.root]}</span><span class="chord-sym">${CT[ch.type]?.s||''}</span></div><div class="chord-type-name">${CT[ch.type]?.l||''}</div><div class="chord-notes">${nns}</div></div>`;
-  }).join('');
-}
-
-function litChord(containerId,idx){
-  document.querySelectorAll(`#${containerId} .chord-card`).forEach((c,i)=>c.classList.toggle('lit',i===idx));
-}
-
 function getPatById(instrId,patId){
   const instr=instrById(instrId);
   if(instr.t==='guitar')return GPATS[patId];
@@ -980,93 +906,344 @@ function getPatById(instrId,patId){
   return null;
 }
 
-function setPlayBtn(id,playing){
-  const btn=document.getElementById(id);if(!btn)return;
-  btn.classList.toggle('playing',playing);
-  const labels={'gen-play':['▶ Play','⏹ Stop'],'cust-play':['▶ Play','⏹ Stop'],'duet-play':['▶ Play Duet','⏹ Stop Duet']};
-  const l=labels[id];if(l)btn.textContent=playing?l[1]:l[0];
+// ═══════════════════════════════
+// STEP 5 — TRACK PLAYER (lookahead scheduler)
+// ═══════════════════════════════
+class TrackPlayer {
+  constructor(cfg) {
+    this.cfg = cfg;
+    this.isPlaying = false;
+    this.nextNoteTime = 0;
+    this.currentStep = 0;
+    this.currentChordIdx = 0;
+    this.schedulerTimer = null;
+  }
+
+  start() {
+    if (ctx.state === 'suspended') ctx.resume();
+    this.isPlaying = true;
+    this.currentStep = 0;
+    this.currentChordIdx = 0;
+    this.nextNoteTime = ctx.currentTime + 0.05;
+    if (this.cfg.onChordChange) setTimeout(() => this.cfg.onChordChange(0), 0);
+    this._schedule();
+  }
+
+  _schedule() {
+    const bpm = this.cfg.bpm || 100;
+    const stepDur = (60 / bpm) / 4; // 16th note
+
+    while (this.nextNoteTime < ctx.currentTime + 0.1) {
+      this._scheduleStep(this.currentStep, this.nextNoteTime);
+      this.nextNoteTime += stepDur;
+      this.currentStep++;
+      const steps = this.cfg.pattern.steps || 16;
+      if (this.currentStep >= steps) {
+        this.currentStep = 0;
+        const chords = this.cfg.chords;
+        if (chords && chords.length > 1) {
+          this.currentChordIdx = (this.currentChordIdx + 1) % chords.length;
+          const ci = this.currentChordIdx;
+          setTimeout(() => this.cfg.onChordChange?.(ci), 0);
+        }
+      }
+    }
+    if (this.isPlaying) {
+      this.schedulerTimer = setTimeout(() => this._schedule(), 25);
+    }
+  }
+
+  _scheduleStep(step, time) {
+    const { instrId, pattern, chords } = this.cfg;
+    const instr = instrById(instrId);
+    const vol = this.cfg.vol ?? 0.8;
+
+    if (instr.t === 'drums') {
+      if (pattern.k?.[step])  playKick(time, vol * 1.1);
+      if (pattern.sn?.[step]) playSnare(time, vol * 0.8);
+      if (pattern.hh?.[step]) playHihat(time, false, vol * 0.3);
+      if (pattern.oh?.[step]) playHihat(time, true,  vol * 0.28);
+      if (pattern.tm?.[step]) playTom(time,   vol * 0.7);
+      if (pattern.cr?.[step]) playCrash(time, vol * 0.4);
+      if (pattern.rd?.[step]) playRide(time,  vol * 0.2);
+      return;
+    }
+
+    const chord = chords?.[this.currentChordIdx];
+    if (!chord) return;
+    const stroke = pattern.strokes?.find(s => s.step === step);
+    if (!stroke) return;
+    this._playStroke(stroke, chord, instr, time, vol);
+  }
+
+  _playStroke(stroke, chord, instr, time, vol) {
+    const bpm = this.cfg.bpm || 100;
+    const stepDur = (60 / bpm) / 4;
+    const noteDur = Math.max(0.05, (stroke.dur ?? 4) * stepDur * 0.9);
+    const vel = (stroke.vel ?? 1) * vol;
+    const SPREAD = instr.t === 'piano' ? 0.008 : 0.018;
+    const midiNotes = chordMidiNotes(chord.root, chord.type, instr.oct);
+
+    if (stroke.a === 'b') {
+      const bassMidi = chord.root + 12 * instr.oct;
+      playMidiNote(this.cfg.instrId, bassMidi, time, noteDur, vel * 0.85);
+    } else if (stroke.a === -1 || stroke.a === undefined) {
+      if (stroke.muted) {
+        midiNotes.slice(0, 4).forEach((n, i) => playMidiNote(this.cfg.instrId, n, time + i * 0.012, 0.06, vel * 0.5));
+      } else {
+        midiNotes.forEach((n, i) => playMidiNote(this.cfg.instrId, n, time + i * SPREAD, noteDur, vel * Math.max(0.1, 1 - i * 0.04)));
+      }
+    } else if (typeof stroke.a === 'number' && stroke.a >= 0) {
+      playMidiNote(this.cfg.instrId, midiNotes[Math.min(stroke.a, midiNotes.length - 1)], time, noteDur, vel);
+    }
+  }
+
+  stop() {
+    this.isPlaying = false;
+    clearTimeout(this.schedulerTimer);
+  }
 }
 
-function instrOptGroups(selId){
-  const groups={};INSTR.forEach(i=>(groups[i.g]||(groups[i.g]=[])).push(i));
-  return Object.entries(groups).map(([g,instrs])=>
-    `<optgroup label="${g}">${instrs.map(i=>`<option value="${i.id}"${i.id===selId?' selected':''}>${i.n}</option>`).join('')}</optgroup>`
+// ═══════════════════════════════
+// RECORDING
+// ═══════════════════════════════
+const REC = { mr: null, chunks: [], tid: null, active: false, startT: 0 };
+
+function startRec(durEl, dlEl, statusEl) {
+  if (!streamDest) return;
+  const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+  REC.mr = new MediaRecorder(streamDest.stream, { mimeType: mime });
+  REC.chunks = [];
+  REC.mr.ondataavailable = e => { if (e.data.size > 0) REC.chunks.push(e.data); };
+  REC.mr.onstop = () => {
+    const blob = new Blob(REC.chunks, { type: 'audio/webm' });
+    if (dlEl) { dlEl.href = URL.createObjectURL(blob); dlEl.download = 'chord-session.webm'; dlEl.style.display = 'inline'; }
+  };
+  REC.mr.start(100);
+  REC.active = true; REC.startT = Date.now();
+  document.getElementById('rec-pill').classList.add('active');
+  statusEl?.classList.remove('hidden');
+  REC.tid = setInterval(() => {
+    const s = Math.floor((Date.now() - REC.startT) / 1000);
+    const ts = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+    document.getElementById('rec-dur').textContent = ts;
+    if (durEl) durEl.textContent = ts;
+  }, 500);
+}
+
+function stopRec() {
+  if (!REC.active) return;
+  clearInterval(REC.tid); REC.mr?.stop(); REC.active = false;
+  document.getElementById('rec-pill').classList.remove('active');
+}
+
+// ═══════════════════════════════
+// CHORD GENERATION
+// ═══════════════════════════════
+function buildChords(keyIdx, moodKey, progIdx, count) {
+  const mood = MOODS[moodKey]; if (!mood) return [];
+  const prog = mood.p[progIdx] || mood.p[0];
+  return Array.from({ length: count }, (_, i) => {
+    const [semi, type, roman] = prog.c[i % prog.c.length];
+    const root = (keyIdx + semi) % 12;
+    return { root, type, roman, label: NOTES[root] + (CT[type]?.s || '') };
+  });
+}
+
+function parseCustom(text) {
+  const FM = { 'Cb': 11, 'Db': 1, 'Eb': 3, 'Fb': 4, 'Gb': 6, 'Ab': 8, 'Bb': 10 };
+  return text.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean).map(raw => {
+    const m = raw.match(/^([A-G][#b]?)/); if (!m) return null;
+    const rn = m[1];
+    let root = FM[rn] ?? NOTES.indexOf(rn); if (root < 0) return null;
+    let s = raw.slice(rn.length), type = 'maj';
+    if (/^m7b5|^mø/.test(s)) type = 'hdim7';
+    else if (/^min9|^m9/.test(s)) type = 'min9';
+    else if (/^min7|^m7/.test(s)) type = 'min7';
+    else if (/^min6|^m6/.test(s)) type = 'min6';
+    else if (/^maj9/.test(s)) type = 'maj9';
+    else if (/^maj7|^M7/.test(s)) type = 'maj7';
+    else if (/^maj/.test(s)) type = 'maj';
+    else if (/^m(?!aj)/.test(s)) type = 'min';
+    else if (/^dim7|^°7/.test(s)) type = 'dim7';
+    else if (/^dim|^°/.test(s)) type = 'dim';
+    else if (/^aug7|\+7/.test(s)) type = 'aug7';
+    else if (/^aug|\+/.test(s)) type = 'aug';
+    else if (/^sus2/.test(s)) type = 'sus2';
+    else if (/^sus4|^sus/.test(s)) type = 'sus4';
+    else if (/^add9/.test(s)) type = 'add9';
+    else if (/^7sus4/.test(s)) type = '7sus4';
+    else if (/^7b9/.test(s)) type = '7b9';
+    else if (/^7#9|^7sh9/.test(s)) type = '7sh9';
+    else if (/^7/.test(s)) type = '7';
+    else if (/^6/.test(s)) type = '6';
+    else if (/^9/.test(s)) type = '9';
+    else if (/^5/.test(s)) type = '5';
+    return { root, type, roman: '', label: NOTES[root] + (CT[type]?.s || '') };
+  }).filter(Boolean);
+}
+
+// ═══════════════════════════════
+// STATE
+// ═══════════════════════════════
+const S = {
+  gen:  { key:0, scale:'Major', mood:'Happy', progIdx:0, count:4, bpm:100, instrId:'acoustic', patId:'alldown', chords:[], player:null },
+  cust: { scale:'Major', bpm:100, instrId:'acoustic', patId:'alldown', chords:[], player:null },
+  mt:   { key:0, scale:'Major', mood:'Happy', progIdx:0, chords:[], tracks:[], solo:null, playing:false },
+  duet: { key:0, scale:'Major', mood:'Happy', progIdx:0, bpm:100, gtrId:'acoustic', gtrPatId:'alldown', pnoId:'grand', pnoPatId:'pi-block', mix:'both', chords:[], gtrPlayer:null, pnoPlayer:null },
+};
+const TRACK_COLORS = ['#8b5cf6','#f472b6','#34d399','#60a5fa','#fbbf24','#fb923c','#a78bfa','#4ade80'];
+let trackCounter = 0;
+
+// ═══════════════════════════════
+// UI HELPERS
+// ═══════════════════════════════
+function makeInstrGrid(containerId, filterFn, selId, onSelect) {
+  const container = document.getElementById(containerId); if (!container) return;
+  container.innerHTML = '';
+  const groups = {};
+  INSTR.filter(filterFn || Boolean).forEach(i => (groups[i.g] || (groups[i.g] = [])).push(i));
+  Object.entries(groups).forEach(([grp, instrs]) => {
+    const lbl = document.createElement('div'); lbl.className = 'instr-group-label'; lbl.textContent = grp;
+    container.appendChild(lbl);
+    instrs.forEach(instr => {
+      const card = document.createElement('div');
+      card.className = 'instr-card' + (instr.id === selId ? ' sel' : '');
+      card.innerHTML = `<div class="instr-icon">${instr.icon}</div><div class="instr-name">${instr.n}</div><div class="instr-desc">${instr.d}</div>`;
+      card.addEventListener('click', () => {
+        container.querySelectorAll('.instr-card').forEach(c => c.classList.remove('sel'));
+        card.classList.add('sel'); onSelect(instr.id);
+      });
+      container.appendChild(card);
+    });
+  });
+}
+
+function populatePatSelect(selId, instrId, curPatId) {
+  const sel = document.getElementById(selId); if (!sel) return;
+  const pats = getPatsForInstr(instrId);
+  sel.innerHTML = pats.map(p => `<option value="${p.id}"${p.id === curPatId ? ' selected' : ''}>${p.n}</option>`).join('');
+  if (!pats.find(p => p.id === curPatId) && pats.length) sel.value = pats[0].id;
+}
+function populateKeySelect(selId, keyIdx) {
+  const sel = document.getElementById(selId); if (!sel) return;
+  sel.innerHTML = NOTE_DISP.map((n, i) => `<option value="${i}"${i === keyIdx ? ' selected' : ''}>${n}</option>`).join('');
+}
+function populateScaleSelect(selId, cur) {
+  const sel = document.getElementById(selId); if (!sel) return;
+  sel.innerHTML = SCALE_NAMES.map(s => `<option value="${s}"${s === cur ? ' selected' : ''}>${s}</option>`).join('');
+}
+function populateMoodForScale(moodSelId, scale, cur) {
+  const sel = document.getElementById(moodSelId); if (!sel) return;
+  const order = SCALES[scale]?.moodOrder || Object.keys(MOODS);
+  sel.innerHTML = order.map(m => `<option value="${m}"${m === cur ? ' selected' : ''}>${m}</option>`).join('');
+}
+function renderProgVars(containerId, moodKey, selIdx, onClick) {
+  const c = document.getElementById(containerId); if (!c) return;
+  c.innerHTML = '';
+  (MOODS[moodKey]?.p || []).forEach((p, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'prog-var' + (i === selIdx ? ' sel' : ''); btn.textContent = p.n;
+    btn.addEventListener('click', () => {
+      c.querySelectorAll('.prog-var').forEach(b => b.classList.remove('sel'));
+      btn.classList.add('sel'); onClick(i);
+    });
+    c.appendChild(btn);
+  });
+}
+function renderChordGrid(containerId, chords) {
+  const c = document.getElementById(containerId); if (!c) return;
+  const n = chords.length;
+  c.className = 'chord-grid ' + (n === 6 ? 'n6' : n === 3 ? 'n3' : n === 8 ? 'n8' : n === 12 ? 'n12' : 'n4');
+  c.innerHTML = chords.map((ch, i) => {
+    const nns = (CT[ch.type] || CT['maj']).iv.map(s => NOTES[(ch.root + s) % 12]).join(' ');
+    return `<div class="chord-card" data-ci="${i}"><div class="chord-roman">${ch.roman || ''}</div><div style="display:flex;align-items:baseline;gap:2px"><span class="chord-root">${NOTES[ch.root]}</span><span class="chord-sym">${CT[ch.type]?.s || ''}</span></div><div class="chord-type-name">${CT[ch.type]?.l || ''}</div><div class="chord-notes">${nns}</div></div>`;
+  }).join('');
+}
+function litChord(containerId, idx) {
+  document.querySelectorAll(`#${containerId} .chord-card`).forEach((c, i) => c.classList.toggle('lit', i === idx));
+}
+function setPlayBtn(id, playing) {
+  const btn = document.getElementById(id); if (!btn) return;
+  btn.classList.toggle('playing', playing);
+  const L = { 'gen-play': ['▶ Play', '⏹ Stop'], 'cust-play': ['▶ Play', '⏹ Stop'], 'duet-play': ['▶ Play Duet', '⏹ Stop Duet'] };
+  const l = L[id]; if (l) btn.textContent = playing ? l[1] : l[0];
+}
+function instrOptGroups(selId) {
+  const groups = {};
+  INSTR.forEach(i => (groups[i.g] || (groups[i.g] = [])).push(i));
+  return Object.entries(groups).map(([g, instrs]) =>
+    `<optgroup label="${g}">${instrs.map(i => `<option value="${i.id}"${i.id === selId ? ' selected' : ''}>${i.n}</option>`).join('')}</optgroup>`
   ).join('');
 }
-function patOpts(instrId,selId){
-  return getPatsForInstr(instrId).map(p=>`<option value="${p.id}"${p.id===selId?' selected':''}>${p.n}</option>`).join('');
+function patOpts(instrId, selId) {
+  return getPatsForInstr(instrId).map(p => `<option value="${p.id}"${p.id === selId ? ' selected' : ''}>${p.n}</option>`).join('');
 }
-
-function stopAllPlayers(){
-  if(S.gen.player){S.gen.player.stop();S.gen.player=null;setPlayBtn('gen-play',false);}
-  if(S.cust.player){S.cust.player.stop();S.cust.player=null;setPlayBtn('cust-play',false);}
-  if(S.duet.gtrPlayer){S.duet.gtrPlayer.stop();S.duet.gtrPlayer=null;}
-  if(S.duet.pnoPlayer){S.duet.pnoPlayer.stop();S.duet.pnoPlayer=null;}
-  setPlayBtn('duet-play',false);
-  S.mt.tracks.forEach(t=>{t.player?.stop();t.player=null;});
-  S.mt.playing=false;
-  const mp=document.getElementById('mt-play');if(mp)mp.textContent='▶ Play All';
-  if(Tone.Transport.state==='started'){Tone.Transport.stop();Tone.Transport.position=0;}
+function stopAllPlayers() {
+  if (S.gen.player) { S.gen.player.stop(); S.gen.player = null; setPlayBtn('gen-play', false); }
+  if (S.cust.player) { S.cust.player.stop(); S.cust.player = null; setPlayBtn('cust-play', false); }
+  if (S.duet.gtrPlayer) { S.duet.gtrPlayer.stop(); S.duet.gtrPlayer = null; }
+  if (S.duet.pnoPlayer) { S.duet.pnoPlayer.stop(); S.duet.pnoPlayer = null; }
+  setPlayBtn('duet-play', false);
+  S.mt.tracks.forEach(t => { t.player?.stop(); t.player = null; });
+  S.mt.playing = false;
+  const mp = document.getElementById('mt-play'); if (mp) mp.textContent = '▶ Play All';
 }
 
 // ═══════════════════════════════
 // GENERATOR
 // ═══════════════════════════════
-function genGenerate(){
-  S.gen.chords=buildChords(S.gen.key,S.gen.mood,S.gen.progIdx,S.gen.count);
-  renderChordGrid('gen-chords',S.gen.chords);
+function genGenerate() {
+  S.gen.chords = buildChords(S.gen.key, S.gen.mood, S.gen.progIdx, S.gen.count);
+  renderChordGrid('gen-chords', S.gen.chords);
 }
-
-async function genPlay(){
-  if(S.gen.player){S.gen.player.stop();S.gen.player=null;setPlayBtn('gen-play',false);return;}
-  if(!S.gen.chords.length)genGenerate();
-  const pat=getPatById(S.gen.instrId,S.gen.patId)||getPatsForInstr(S.gen.instrId)[0];
-  if(!pat)return;
-  Tone.Transport.stop();Tone.Transport.position=0;
-  Tone.Transport.bpm.value=S.gen.bpm;
-  S.gen.player=new TrackPlayer({instrId:S.gen.instrId,pattern:pat,chords:S.gen.chords,vol:.82,onChordChange:ci=>litChord('gen-chords',ci)});
-  litChord('gen-chords',0);setPlayBtn('gen-play',true);
-  await S.gen.player.start();
+function genPlay() {
+  if (ctx.state === 'suspended') ctx.resume();
+  if (S.gen.player) { S.gen.player.stop(); S.gen.player = null; setPlayBtn('gen-play', false); return; }
+  if (!S.gen.chords.length) genGenerate();
+  const pat = getPatById(S.gen.instrId, S.gen.patId) || getPatsForInstr(S.gen.instrId)[0];
+  if (!pat) return;
+  S.gen.player = new TrackPlayer({ instrId: S.gen.instrId, pattern: pat, chords: S.gen.chords, bpm: S.gen.bpm, vol: 0.82, onChordChange: ci => litChord('gen-chords', ci) });
+  litChord('gen-chords', 0); setPlayBtn('gen-play', true);
+  S.gen.player.start();
 }
 
 // ═══════════════════════════════
 // CUSTOM
 // ═══════════════════════════════
-async function custPlay(){
-  if(S.cust.player){S.cust.player.stop();S.cust.player=null;setPlayBtn('cust-play',false);return;}
-  const text=document.getElementById('cust-input')?.value||'';
-  S.cust.chords=parseCustom(text);
-  if(!S.cust.chords.length){alert('No valid chords. Try: Am, F, C, G');return;}
-  renderChordGrid('cust-chords',S.cust.chords);
-  const pat=getPatById(S.cust.instrId,S.cust.patId)||getPatsForInstr(S.cust.instrId)[0];
-  if(!pat)return;
-  Tone.Transport.stop();Tone.Transport.position=0;
-  Tone.Transport.bpm.value=S.cust.bpm;
-  S.cust.player=new TrackPlayer({instrId:S.cust.instrId,pattern:pat,chords:S.cust.chords,vol:.82,onChordChange:ci=>litChord('cust-chords',ci)});
-  litChord('cust-chords',0);setPlayBtn('cust-play',true);
-  await S.cust.player.start();
+function custPlay() {
+  if (ctx.state === 'suspended') ctx.resume();
+  if (S.cust.player) { S.cust.player.stop(); S.cust.player = null; setPlayBtn('cust-play', false); return; }
+  S.cust.chords = parseCustom(document.getElementById('cust-input')?.value || '');
+  if (!S.cust.chords.length) { alert('No valid chords. Try: Am, F, C, G'); return; }
+  renderChordGrid('cust-chords', S.cust.chords);
+  const pat = getPatById(S.cust.instrId, S.cust.patId) || getPatsForInstr(S.cust.instrId)[0];
+  if (!pat) return;
+  S.cust.player = new TrackPlayer({ instrId: S.cust.instrId, pattern: pat, chords: S.cust.chords, bpm: S.cust.bpm, vol: 0.82, onChordChange: ci => litChord('cust-chords', ci) });
+  litChord('cust-chords', 0); setPlayBtn('cust-play', true);
+  S.cust.player.start();
 }
 
 // ═══════════════════════════════
 // MULTI-TRACK
 // ═══════════════════════════════
-function mtAddTrack(instrId,patId,overrideChords,overrideBpm){
-  instrId=instrId||'acoustic';
-  const pats=getPatsForInstr(instrId);
-  patId=patId||(pats[0]?.id)||'alldown';
-  const color=TRACK_COLORS[trackCounter%TRACK_COLORS.length];
-  const id='t'+(++trackCounter);
-  const bpm=overrideBpm||100;
-  const track={id,instrId,patId,bpm,vol:80,muted:false,soloed:false,gainNode:null,player:null,color,_overrideChords:overrideChords||null};
+function mtAddTrack(instrId, patId, overrideChords, overrideBpm) {
+  instrId = instrId || 'acoustic';
+  const pats = getPatsForInstr(instrId);
+  patId = patId || (pats[0]?.id) || 'alldown';
+  const color = TRACK_COLORS[trackCounter % TRACK_COLORS.length];
+  const id = 't' + (++trackCounter);
+  const bpm = overrideBpm || 100;
+  const track = { id, instrId, patId, bpm, vol: 80, muted: false, soloed: false, player: null, color, _overrideChords: overrideChords || null };
   S.mt.tracks.push(track);
-  const list=document.getElementById('mt-tracks');if(!list)return;
-  const row=document.createElement('div');
-  row.className='track-row';row.dataset.tid=id;
-  row.innerHTML=`
+  const list = document.getElementById('mt-tracks'); if (!list) return;
+  const row = document.createElement('div');
+  row.className = 'track-row'; row.dataset.tid = id;
+  row.innerHTML = `
     <div class="track-stripe" style="background:${color}"></div>
     <span class="track-name" contenteditable spellcheck="false">Track ${trackCounter}</span>
     <select class="track-sel">${instrOptGroups(instrId)}</select>
-    <select class="track-pat-sel">${patOpts(instrId,patId)}</select>
+    <select class="track-pat-sel">${patOpts(instrId, patId)}</select>
     <div class="track-bpm-group"><span style="font-size:10px;color:var(--txt3)">BPM</span><input type="range" class="track-bpm" min="40" max="220" value="${bpm}"><span class="track-bpm-num">${bpm}</span></div>
     <div class="track-vol-group"><span style="font-size:10px;color:var(--txt3)">Vol</span><input type="range" class="track-vol" min="0" max="100" value="${track.vol}"></div>
     <button class="tbtn btn-mute">M</button>
@@ -1074,135 +1251,108 @@ function mtAddTrack(instrId,patId,overrideChords,overrideBpm){
     <button class="tbtn del btn-del">×</button>
   `;
   list.appendChild(row);
-  const isel=row.querySelector('.track-sel'),psel=row.querySelector('.track-pat-sel');
-  isel.addEventListener('change',()=>{track.instrId=isel.value;psel.innerHTML=patOpts(track.instrId,'');track.patId=psel.value;});
-  psel.addEventListener('change',()=>track.patId=psel.value);
-  const bpmIn=row.querySelector('.track-bpm'),bpmNum=row.querySelector('.track-bpm-num');
-  bpmIn.addEventListener('input',()=>{track.bpm=+bpmIn.value;bpmNum.textContent=bpmIn.value;});
-  const volIn=row.querySelector('.track-vol');
-  volIn.addEventListener('input',()=>{
-    track.vol=+volIn.value;
-    const isDrums=instrById(track.instrId).t==='drums';
-    if(isDrums&&drumBus&&!track.muted&&S.mt.solo===null){
-      drumBus.gain.rampTo(track.vol/100,0.05);
-    } else if(track.gainNode&&!track.muted&&S.mt.solo===null){
-      track.gainNode.gain.rampTo(track.vol/100,0.05);
-    }
+  const isel = row.querySelector('.track-sel'), psel = row.querySelector('.track-pat-sel');
+  isel.addEventListener('change', () => { track.instrId = isel.value; psel.innerHTML = patOpts(track.instrId, ''); track.patId = psel.value; });
+  psel.addEventListener('change', () => track.patId = psel.value);
+  const bpmIn = row.querySelector('.track-bpm'), bpmNum = row.querySelector('.track-bpm-num');
+  bpmIn.addEventListener('input', () => { track.bpm = +bpmIn.value; bpmNum.textContent = bpmIn.value; });
+  const volIn = row.querySelector('.track-vol');
+  volIn.addEventListener('input', () => {
+    track.vol = +volIn.value;
+    if (track.player && !track.muted && S.mt.solo === null) track.player.cfg.vol = track.vol / 100;
   });
-  const btnM=row.querySelector('.btn-mute');
-  btnM.addEventListener('click',()=>{
-    track.muted=!track.muted;btnM.classList.toggle('tmuted',track.muted);
-    const isDrums=instrById(track.instrId).t==='drums';
-    const eff=track.muted?0:(S.mt.solo&&S.mt.solo!==track.id?0:track.vol/100);
-    if(isDrums&&drumBus)drumBus.gain.rampTo(eff,0.05);
-    else if(track.gainNode)track.gainNode.gain.rampTo(eff,0.05);
+  row.querySelector('.btn-mute').addEventListener('click', function() {
+    track.muted = !track.muted; this.classList.toggle('tmuted', track.muted);
+    if (track.player) track.player.cfg.vol = track.muted ? 0 : (S.mt.solo && S.mt.solo !== track.id ? 0 : track.vol / 100);
   });
-  const btnS=row.querySelector('.btn-solo');
-  btnS.addEventListener('click',()=>{
-    const wasSoloed=track.soloed;
-    S.mt.tracks.forEach(t=>t.soloed=false);
-    document.querySelectorAll('.btn-solo').forEach(b=>b.classList.remove('tsoloed'));
-    if(!wasSoloed){track.soloed=true;S.mt.solo=track.id;btnS.classList.add('tsoloed');}
-    else S.mt.solo=null;
-    S.mt.tracks.forEach(t=>{
-      const isDrums=instrById(t.instrId).t==='drums';
-      const eff=t.muted?0:(S.mt.solo===null||S.mt.solo===t.id?t.vol/100:0);
-      if(isDrums&&drumBus)drumBus.gain.rampTo(eff,0.05);
-      else if(t.gainNode)t.gainNode.gain.rampTo(eff,0.05);
+  row.querySelector('.btn-solo').addEventListener('click', function() {
+    const wasSoloed = track.soloed;
+    S.mt.tracks.forEach(t => t.soloed = false);
+    document.querySelectorAll('.btn-solo').forEach(b => b.classList.remove('tsoloed'));
+    if (!wasSoloed) { track.soloed = true; S.mt.solo = track.id; this.classList.add('tsoloed'); }
+    else S.mt.solo = null;
+    S.mt.tracks.forEach(t => {
+      if (t.player) t.player.cfg.vol = t.muted ? 0 : (S.mt.solo === null || S.mt.solo === t.id ? t.vol / 100 : 0);
     });
   });
-  row.querySelector('.btn-del').addEventListener('click',()=>{
-    const idx=S.mt.tracks.findIndex(t=>t.id===track.id);
-    if(idx>-1){S.mt.tracks[idx].player?.stop();S.mt.tracks.splice(idx,1);}
+  row.querySelector('.btn-del').addEventListener('click', () => {
+    const idx = S.mt.tracks.findIndex(t => t.id === track.id);
+    if (idx > -1) { S.mt.tracks[idx].player?.stop(); S.mt.tracks.splice(idx, 1); }
     row.remove();
   });
 }
 
-function mtApply(){S.mt.chords=buildChords(S.mt.key,S.mt.mood,S.mt.progIdx,8);}
+function mtApply() { S.mt.chords = buildChords(S.mt.key, S.mt.mood, S.mt.progIdx, 8); }
 
-async function mtPlayAll(){
-  if(S.mt.playing){
-    S.mt.tracks.forEach(t=>{t.player?.stop();t.player=null;});
-    S.mt.playing=false;
-    if(Tone.Transport.state==='started'){Tone.Transport.stop();Tone.Transport.position=0;}
-    document.getElementById('mt-play').textContent='▶ Play All';
+function mtPlayAll() {
+  if (ctx.state === 'suspended') ctx.resume();
+  if (S.mt.playing) {
+    S.mt.tracks.forEach(t => { t.player?.stop(); t.player = null; });
+    S.mt.playing = false;
+    document.getElementById('mt-play').textContent = '▶ Play All';
     return;
   }
-  if(!S.mt.chords.length)mtApply();
-
-  Tone.Transport.stop();Tone.Transport.position=0;
-  const firstMelodic=S.mt.tracks.find(t=>instrById(t.instrId).t!=='drums');
-  Tone.Transport.bpm.value=firstMelodic?.bpm||100;
-
-  await Promise.all(S.mt.tracks.map(async track=>{
+  if (!S.mt.chords.length) mtApply();
+  S.mt.tracks.forEach(track => {
     track.player?.stop();
-    const instr=instrById(track.instrId);
-    const isDrums=instr.t==='drums';
-    let gn=null;
-    if(isDrums){
-      drumBus.gain.value=track.muted?0:(S.mt.solo&&S.mt.solo!==track.id?0:track.vol/100);
-      gn=drumBus;
-    } else {
-      gn=new Tone.Gain(track.muted?0:(S.mt.solo&&S.mt.solo!==track.id?0:track.vol/100));
-      gn.connect(masterBus);
-    }
-    track.gainNode=gn;
-    const pattern=isDrums?(DPATS[track.patId]||Object.values(DPATS)[0]):(getPatById(track.instrId,track.patId)||getPatsForInstr(track.instrId)[0]);
-    if(!pattern)return;
-    const chords=isDrums?[]:(track._overrideChords||S.mt.chords);
-    track.player=new TrackPlayer({instrId:track.instrId,pattern,chords,gainNode:isDrums?null:gn});
-    await track.player.prepare();
-  }));
-
-  Tone.Transport.start('+0.1');
-  S.mt.playing=true;
-  document.getElementById('mt-play').textContent='⏹ Stop All';
+    const instr = instrById(track.instrId);
+    const isDrums = instr.t === 'drums';
+    const pattern = isDrums ? (DPATS[track.patId] || Object.values(DPATS)[0]) : (getPatById(track.instrId, track.patId) || getPatsForInstr(track.instrId)[0]);
+    if (!pattern) return;
+    const chords = isDrums ? [] : (track._overrideChords || S.mt.chords);
+    const vol = track.muted ? 0 : (S.mt.solo && S.mt.solo !== track.id ? 0 : track.vol / 100);
+    track.player = new TrackPlayer({ instrId: track.instrId, pattern, chords, bpm: track.bpm, vol });
+    track.player.start();
+  });
+  S.mt.playing = true;
+  document.getElementById('mt-play').textContent = '⏹ Stop All';
 }
 
-function addToMultiTrack(instrId,patId,bpm,chords){
-  mtAddTrack(instrId,patId,chords,bpm);
+function addToMultiTrack(instrId, patId, bpm, chords) {
+  mtAddTrack(instrId, patId, chords, bpm);
   document.querySelector('.tab[data-tab="multi"]')?.click();
 }
 
 // ═══════════════════════════════
 // DUET
 // ═══════════════════════════════
-async function duetPlay(){
-  if(S.duet.gtrPlayer||S.duet.pnoPlayer){
-    S.duet.gtrPlayer?.stop();S.duet.pnoPlayer?.stop();
-    S.duet.gtrPlayer=null;S.duet.pnoPlayer=null;setPlayBtn('duet-play',false);return;
+function duetPlay() {
+  if (ctx.state === 'suspended') ctx.resume();
+  if (S.duet.gtrPlayer || S.duet.pnoPlayer) {
+    S.duet.gtrPlayer?.stop(); S.duet.pnoPlayer?.stop();
+    S.duet.gtrPlayer = null; S.duet.pnoPlayer = null;
+    setPlayBtn('duet-play', false); return;
   }
-  const chords=buildChords(S.duet.key,S.duet.mood,S.duet.progIdx,4);
-  Tone.Transport.stop();Tone.Transport.position=0;
-  Tone.Transport.bpm.value=S.duet.bpm;
-  let gv=0.7,pv=0.7;
-  if(S.duet.mix==='gtr-lead'){gv=1;pv=.35;}
-  else if(S.duet.mix==='pno-lead'){gv=.35;pv=1;}
-  const gtrVol=gv*(+document.getElementById('duet-gtr-vol')?.value||80)/100;
-  const pnoVol=pv*(+document.getElementById('duet-pno-vol')?.value||80)/100;
-  let gChords=chords,pChords=chords;
-  if(S.duet.mix==='call-resp'){gChords=chords.filter((_,i)=>i%2===0);pChords=chords.filter((_,i)=>i%2===1);}
-  const gtrPat=getPatById(S.duet.gtrId,S.duet.gtrPatId)||getPatsForInstr(S.duet.gtrId)[0];
-  const pnoPat=getPatById(S.duet.pnoId,S.duet.pnoPatId)||getPatsForInstr(S.duet.pnoId)[0];
-  S.duet.gtrPlayer=new TrackPlayer({instrId:S.duet.gtrId,pattern:gtrPat,chords:gChords,vol:gtrVol});
-  S.duet.pnoPlayer=new TrackPlayer({instrId:S.duet.pnoId,pattern:pnoPat,chords:pChords,vol:pnoVol});
-  setPlayBtn('duet-play',true);
-  await Promise.all([S.duet.gtrPlayer.prepare(),S.duet.pnoPlayer.prepare()]);
-  Tone.Transport.start('+0.05');
+  const chords = buildChords(S.duet.key, S.duet.mood, S.duet.progIdx, 4);
+  let gv = 0.7, pv = 0.7;
+  if (S.duet.mix === 'gtr-lead') { gv = 1; pv = 0.35; }
+  else if (S.duet.mix === 'pno-lead') { gv = 0.35; pv = 1; }
+  const gSlider = +document.getElementById('duet-gtr-vol')?.value || 80;
+  const pSlider = +document.getElementById('duet-pno-vol')?.value || 80;
+  const gtrVol = gv * gSlider / 100;
+  const pnoVol = pv * pSlider / 100;
+  let gChords = chords, pChords = chords;
+  if (S.duet.mix === 'call-resp') { gChords = chords.filter((_, i) => i % 2 === 0); pChords = chords.filter((_, i) => i % 2 === 1); }
+  const gtrPat = getPatById(S.duet.gtrId, S.duet.gtrPatId) || getPatsForInstr(S.duet.gtrId)[0];
+  const pnoPat = getPatById(S.duet.pnoId, S.duet.pnoPatId) || getPatsForInstr(S.duet.pnoId)[0];
+  S.duet.gtrPlayer = new TrackPlayer({ instrId: S.duet.gtrId, pattern: gtrPat, chords: gChords, bpm: S.duet.bpm, vol: gtrVol });
+  S.duet.pnoPlayer = new TrackPlayer({ instrId: S.duet.pnoId, pattern: pnoPat, chords: pChords, bpm: S.duet.bpm, vol: pnoVol });
+  setPlayBtn('duet-play', true);
+  S.duet.gtrPlayer.start();
+  S.duet.pnoPlayer.start();
 }
 
 // ═══════════════════════════════
-// REC HELPERS
+// REC SETUP
 // ═══════════════════════════════
-function setupRec(btnId,statusId,durId,dlId){
-  const btn=document.getElementById(btnId);if(!btn)return;
-  btn.addEventListener('click',()=>{
-    if(!REC.active){
-      startRec(document.getElementById(durId),document.getElementById(dlId),document.getElementById(statusId));
-      btn.classList.add('rec');btn.textContent='⏹ Stop Rec';
+function setupRec(btnId, statusId, durId, dlId) {
+  const btn = document.getElementById(btnId); if (!btn) return;
+  btn.addEventListener('click', () => {
+    if (!REC.active) {
+      startRec(document.getElementById(durId), document.getElementById(dlId), document.getElementById(statusId));
+      btn.classList.add('rec'); btn.textContent = '⏹ Stop Rec';
     } else {
-      stopRec();btn.classList.remove('rec');btn.textContent='⏺ Record';
-      document.getElementById(statusId)?.classList.remove('hidden');
+      stopRec(); btn.classList.remove('rec'); btn.textContent = '⏺ Record';
     }
   });
 }
@@ -1210,183 +1360,155 @@ function setupRec(btnId,statusId,durId,dlId){
 // ═══════════════════════════════
 // INIT
 // ═══════════════════════════════
-function init(){
+function init() {
   // Tabs
-  document.querySelectorAll('.tab').forEach(tab=>{
-    tab.addEventListener('click',()=>{
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
       stopAllPlayers();
-      document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
-      document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
       tab.classList.add('active');
-      document.getElementById('tab-'+tab.dataset.tab)?.classList.add('active');
+      document.getElementById('tab-' + tab.dataset.tab)?.classList.add('active');
     });
   });
 
-  // ── GENERATOR ──
-  populateScaleSelect('gen-scale',S.gen.scale);
-  populateKeySelect('gen-key',S.gen.key);
-  populateMoodForScale('gen-mood',S.gen.scale,S.gen.mood);
-  document.getElementById('gen-scale').addEventListener('change',e=>{
-    S.gen.scale=e.target.value;
-    const order=SCALES[S.gen.scale].moodOrder;
-    populateMoodForScale('gen-mood',S.gen.scale,S.gen.mood);
-    if(!order.slice(0,3).includes(S.gen.mood)){
-      S.gen.mood=order[0];document.getElementById('gen-mood').value=S.gen.mood;
-      S.gen.progIdx=0;renderProgVars('gen-prog-vars',S.gen.mood,0,i=>S.gen.progIdx=i);
+  // Generator
+  populateScaleSelect('gen-scale', S.gen.scale);
+  populateKeySelect('gen-key', S.gen.key);
+  populateMoodForScale('gen-mood', S.gen.scale, S.gen.mood);
+  document.getElementById('gen-scale').addEventListener('change', e => {
+    S.gen.scale = e.target.value;
+    populateMoodForScale('gen-mood', S.gen.scale, S.gen.mood);
+    if (!SCALES[S.gen.scale].moodOrder.slice(0, 3).includes(S.gen.mood)) {
+      S.gen.mood = SCALES[S.gen.scale].moodOrder[0];
+      document.getElementById('gen-mood').value = S.gen.mood;
+      S.gen.progIdx = 0; renderProgVars('gen-prog-vars', S.gen.mood, 0, i => S.gen.progIdx = i);
     }
   });
-  document.getElementById('gen-key').addEventListener('change',e=>S.gen.key=+e.target.value);
-  document.getElementById('gen-mood').addEventListener('change',e=>{
-    S.gen.mood=e.target.value;S.gen.progIdx=0;
-    renderProgVars('gen-prog-vars',S.gen.mood,0,i=>S.gen.progIdx=i);
+  document.getElementById('gen-key').addEventListener('change', e => S.gen.key = +e.target.value);
+  document.getElementById('gen-mood').addEventListener('change', e => { S.gen.mood = e.target.value; S.gen.progIdx = 0; renderProgVars('gen-prog-vars', S.gen.mood, 0, i => S.gen.progIdx = i); });
+  renderProgVars('gen-prog-vars', S.gen.mood, 0, i => S.gen.progIdx = i);
+  document.getElementById('gen-count-btns').addEventListener('click', e => {
+    if (!e.target.dataset.c) return;
+    document.querySelectorAll('.count-btn').forEach(b => b.classList.remove('sel'));
+    e.target.classList.add('sel'); S.gen.count = +e.target.dataset.c;
   });
-  renderProgVars('gen-prog-vars',S.gen.mood,0,i=>S.gen.progIdx=i);
-  document.getElementById('gen-count-btns').addEventListener('click',e=>{
-    if(!e.target.dataset.c)return;
-    document.querySelectorAll('.count-btn').forEach(b=>b.classList.remove('sel'));
-    e.target.classList.add('sel');S.gen.count=+e.target.dataset.c;
-  });
-  const genBpm=document.getElementById('gen-bpm');
-  genBpm.addEventListener('input',()=>{S.gen.bpm=+genBpm.value;document.getElementById('gen-bpm-val').textContent=genBpm.value;});
-  makeInstrGrid('gen-instr-grid',null,S.gen.instrId,id=>{
-    S.gen.instrId=id;populatePatSelect('gen-pat',id,S.gen.patId);S.gen.patId=document.getElementById('gen-pat').value;
-  });
-  populatePatSelect('gen-pat',S.gen.instrId,S.gen.patId);
-  document.getElementById('gen-pat').addEventListener('change',e=>S.gen.patId=e.target.value);
-  document.getElementById('gen-btn').addEventListener('click',genGenerate);
-  document.getElementById('gen-play').addEventListener('click',genPlay);
-  document.getElementById('gen-addmt').addEventListener('click',()=>{
-    if(!S.gen.chords.length)genGenerate();
-    addToMultiTrack(S.gen.instrId,S.gen.patId,S.gen.bpm,[...S.gen.chords]);
-  });
-  setupRec('gen-rec','gen-rec-status','gen-rec-dur','gen-dl');
+  const genBpm = document.getElementById('gen-bpm');
+  genBpm.addEventListener('input', () => { S.gen.bpm = +genBpm.value; document.getElementById('gen-bpm-val').textContent = genBpm.value; });
+  makeInstrGrid('gen-instr-grid', null, S.gen.instrId, id => { S.gen.instrId = id; populatePatSelect('gen-pat', id, S.gen.patId); S.gen.patId = document.getElementById('gen-pat').value; });
+  populatePatSelect('gen-pat', S.gen.instrId, S.gen.patId);
+  document.getElementById('gen-pat').addEventListener('change', e => S.gen.patId = e.target.value);
+  document.getElementById('gen-btn').addEventListener('click', genGenerate);
+  document.getElementById('gen-play').addEventListener('click', genPlay);
+  document.getElementById('gen-addmt').addEventListener('click', () => { if (!S.gen.chords.length) genGenerate(); addToMultiTrack(S.gen.instrId, S.gen.patId, S.gen.bpm, [...S.gen.chords]); });
+  setupRec('gen-rec', 'gen-rec-status', 'gen-rec-dur', 'gen-dl');
   genGenerate();
 
-  // ── CUSTOM ──
-  populateScaleSelect('cust-scale',S.cust.scale);
-  document.getElementById('cust-scale').addEventListener('change',e=>S.cust.scale=e.target.value);
-  const custInstrSel=document.getElementById('cust-instr');
-  if(custInstrSel){
-    custInstrSel.innerHTML=instrOptGroups(S.cust.instrId);
-    custInstrSel.addEventListener('change',()=>{
-      S.cust.instrId=custInstrSel.value;
-      populatePatSelect('cust-pat',S.cust.instrId,S.cust.patId);
-      S.cust.patId=document.getElementById('cust-pat').value;
-    });
-  }
-  populatePatSelect('cust-pat',S.cust.instrId,S.cust.patId);
-  document.getElementById('cust-pat').addEventListener('change',e=>S.cust.patId=e.target.value);
-  const custBpm=document.getElementById('cust-bpm');
-  custBpm.addEventListener('input',()=>{S.cust.bpm=+custBpm.value;document.getElementById('cust-bpm-val').textContent=custBpm.value;});
-  document.getElementById('cust-play').addEventListener('click',custPlay);
-  document.getElementById('cust-addmt').addEventListener('click',()=>{
-    const text=document.getElementById('cust-input')?.value||'';
-    const chords=parseCustom(text);
-    if(!chords.length){alert('Enter chords first (e.g. Am, F, C, G)');return;}
-    S.cust.chords=chords;renderChordGrid('cust-chords',chords);
-    addToMultiTrack(S.cust.instrId,S.cust.patId,S.cust.bpm,[...chords]);
+  // Custom
+  populateScaleSelect('cust-scale', S.cust.scale);
+  document.getElementById('cust-scale').addEventListener('change', e => S.cust.scale = e.target.value);
+  const ci = document.getElementById('cust-instr');
+  if (ci) { ci.innerHTML = instrOptGroups(S.cust.instrId); ci.addEventListener('change', () => { S.cust.instrId = ci.value; populatePatSelect('cust-pat', S.cust.instrId, S.cust.patId); S.cust.patId = document.getElementById('cust-pat').value; }); }
+  populatePatSelect('cust-pat', S.cust.instrId, S.cust.patId);
+  document.getElementById('cust-pat').addEventListener('change', e => S.cust.patId = e.target.value);
+  const custBpm = document.getElementById('cust-bpm');
+  custBpm.addEventListener('input', () => { S.cust.bpm = +custBpm.value; document.getElementById('cust-bpm-val').textContent = custBpm.value; });
+  document.getElementById('cust-play').addEventListener('click', custPlay);
+  document.getElementById('cust-addmt').addEventListener('click', () => {
+    const chords = parseCustom(document.getElementById('cust-input')?.value || '');
+    if (!chords.length) { alert('Enter chords first'); return; }
+    S.cust.chords = chords; renderChordGrid('cust-chords', chords);
+    addToMultiTrack(S.cust.instrId, S.cust.patId, S.cust.bpm, [...chords]);
   });
-  setupRec('cust-rec','cust-rec-status','cust-rec-dur','cust-dl');
+  setupRec('cust-rec', 'cust-rec-status', 'cust-rec-dur', 'cust-dl');
 
-  // ── MULTI-TRACK ──
-  populateScaleSelect('mt-scale',S.mt.scale);
-  populateKeySelect('mt-key',S.mt.key);
-  populateMoodForScale('mt-mood',S.mt.scale,S.mt.mood);
-  populateMtVarSelect();
-  document.getElementById('mt-scale').addEventListener('change',e=>{
-    S.mt.scale=e.target.value;
-    const order=SCALES[S.mt.scale].moodOrder;
-    populateMoodForScale('mt-mood',S.mt.scale,S.mt.mood);
-    if(!order.slice(0,3).includes(S.mt.mood)){S.mt.mood=order[0];document.getElementById('mt-mood').value=S.mt.mood;}
-    S.mt.progIdx=0;populateMtVarSelect();
+  // Multi-Track
+  populateScaleSelect('mt-scale', S.mt.scale);
+  populateKeySelect('mt-key', S.mt.key);
+  populateMoodForScale('mt-mood', S.mt.scale, S.mt.mood);
+  const mtVar = document.getElementById('mt-var');
+  const refreshMtVar = () => { if (mtVar) mtVar.innerHTML = (MOODS[S.mt.mood]?.p || []).map((p, i) => `<option value="${i}"${i === S.mt.progIdx ? ' selected' : ''}>${p.n}</option>`).join(''); };
+  refreshMtVar();
+  document.getElementById('mt-scale').addEventListener('change', e => { S.mt.scale = e.target.value; populateMoodForScale('mt-mood', S.mt.scale, S.mt.mood); refreshMtVar(); });
+  document.getElementById('mt-key').addEventListener('change', e => S.mt.key = +e.target.value);
+  document.getElementById('mt-mood').addEventListener('change', e => { S.mt.mood = e.target.value; S.mt.progIdx = 0; refreshMtVar(); });
+  if (mtVar) mtVar.addEventListener('change', e => S.mt.progIdx = +e.target.value);
+  document.getElementById('mt-apply').addEventListener('click', mtApply);
+  document.getElementById('mt-add').addEventListener('click', () => mtAddTrack());
+  document.getElementById('mt-play').addEventListener('click', mtPlayAll);
+  document.getElementById('mt-stop').addEventListener('click', () => {
+    S.mt.tracks.forEach(t => { t.player?.stop(); t.player = null; });
+    S.mt.playing = false;
+    document.getElementById('mt-play').textContent = '▶ Play All';
   });
-  document.getElementById('mt-key').addEventListener('change',e=>S.mt.key=+e.target.value);
-  document.getElementById('mt-mood').addEventListener('change',e=>{S.mt.mood=e.target.value;S.mt.progIdx=0;populateMtVarSelect();});
-  document.getElementById('mt-var').addEventListener('change',e=>S.mt.progIdx=+e.target.value);
-  document.getElementById('mt-apply').addEventListener('click',mtApply);
-  document.getElementById('mt-add').addEventListener('click',()=>mtAddTrack());
-  document.getElementById('mt-play').addEventListener('click',mtPlayAll);
-  document.getElementById('mt-stop').addEventListener('click',()=>{
-    S.mt.tracks.forEach(t=>{t.player?.stop();t.player=null;});
-    S.mt.playing=false;
-    if(Tone.Transport.state==='started'){Tone.Transport.stop();Tone.Transport.position=0;}
-    document.getElementById('mt-play').textContent='▶ Play All';
-  });
-  setupRec('mt-rec','mt-rec-status','mt-rec-dur','mt-dl');
+  setupRec('mt-rec', 'mt-rec-status', 'mt-rec-dur', 'mt-dl');
   mtApply();
-  mtAddTrack('acoustic','alldown');
-  mtAddTrack('grand','pi-block');
-  mtAddTrack('drums','dp-rock');
+  mtAddTrack('acoustic', 'alldown');
+  mtAddTrack('grand', 'pi-block');
+  mtAddTrack('drums', 'dp-rock');
 
-  // ── DUET ──
-  populateScaleSelect('duet-scale',S.duet.scale);
-  populateKeySelect('duet-key',S.duet.key);
-  populateMoodForScale('duet-mood',S.duet.scale,S.duet.mood);
-  populateDuetVarSelect();
-  document.getElementById('duet-scale').addEventListener('change',e=>{
-    S.duet.scale=e.target.value;
-    const order=SCALES[S.duet.scale].moodOrder;
-    populateMoodForScale('duet-mood',S.duet.scale,S.duet.mood);
-    if(!order.slice(0,3).includes(S.duet.mood)){S.duet.mood=order[0];document.getElementById('duet-mood').value=S.duet.mood;}
-    S.duet.progIdx=0;populateDuetVarSelect();
+  // Duet
+  populateScaleSelect('duet-scale', S.duet.scale);
+  populateKeySelect('duet-key', S.duet.key);
+  populateMoodForScale('duet-mood', S.duet.scale, S.duet.mood);
+  const dvSel = document.getElementById('duet-var');
+  const refreshDV = () => { if (dvSel) dvSel.innerHTML = (MOODS[S.duet.mood]?.p || []).map((p, i) => `<option value="${i}"${i === S.duet.progIdx ? ' selected' : ''}>${p.n}</option>`).join(''); };
+  refreshDV();
+  document.getElementById('duet-scale').addEventListener('change', e => { S.duet.scale = e.target.value; populateMoodForScale('duet-mood', S.duet.scale, S.duet.mood); refreshDV(); });
+  document.getElementById('duet-key').addEventListener('change', e => S.duet.key = +e.target.value);
+  document.getElementById('duet-mood').addEventListener('change', e => { S.duet.mood = e.target.value; S.duet.progIdx = 0; refreshDV(); });
+  if (dvSel) dvSel.addEventListener('change', e => S.duet.progIdx = +e.target.value);
+  const duetBpm = document.getElementById('duet-bpm');
+  duetBpm.addEventListener('input', () => { S.duet.bpm = +duetBpm.value; document.getElementById('duet-bpm-val').textContent = duetBpm.value; });
+  makeInstrGrid('duet-gtr-grid', i => i.t === 'guitar' || i.t === 'bass', S.duet.gtrId, id => { S.duet.gtrId = id; populatePatSelect('duet-gtr-pat', id, S.duet.gtrPatId); S.duet.gtrPatId = document.getElementById('duet-gtr-pat').value; });
+  populatePatSelect('duet-gtr-pat', S.duet.gtrId, S.duet.gtrPatId);
+  document.getElementById('duet-gtr-pat').addEventListener('change', e => S.duet.gtrPatId = e.target.value);
+  makeInstrGrid('duet-pno-grid', i => i.t === 'piano', S.duet.pnoId, id => { S.duet.pnoId = id; populatePatSelect('duet-pno-pat', id, S.duet.pnoPatId); S.duet.pnoPatId = document.getElementById('duet-pno-pat').value; });
+  populatePatSelect('duet-pno-pat', S.duet.pnoId, S.duet.pnoPatId);
+  document.getElementById('duet-pno-pat').addEventListener('change', e => S.duet.pnoPatId = e.target.value);
+  document.getElementById('duet-mix-btns').addEventListener('click', e => {
+    const btn = e.target.closest('.mix-btn'); if (!btn) return;
+    document.querySelectorAll('.mix-btn').forEach(b => b.classList.remove('sel'));
+    btn.classList.add('sel'); S.duet.mix = btn.dataset.mix;
   });
-  document.getElementById('duet-key').addEventListener('change',e=>S.duet.key=+e.target.value);
-  document.getElementById('duet-mood').addEventListener('change',e=>{S.duet.mood=e.target.value;S.duet.progIdx=0;populateDuetVarSelect();});
-  document.getElementById('duet-var').addEventListener('change',e=>S.duet.progIdx=+e.target.value);
-  const duetBpm=document.getElementById('duet-bpm');
-  duetBpm.addEventListener('input',()=>{S.duet.bpm=+duetBpm.value;document.getElementById('duet-bpm-val').textContent=duetBpm.value;});
-  makeInstrGrid('duet-gtr-grid',i=>i.t==='guitar'||i.t==='bass',S.duet.gtrId,id=>{
-    S.duet.gtrId=id;populatePatSelect('duet-gtr-pat',id,S.duet.gtrPatId);S.duet.gtrPatId=document.getElementById('duet-gtr-pat').value;
+  document.getElementById('duet-play').addEventListener('click', duetPlay);
+  document.getElementById('duet-addmt').addEventListener('click', () => {
+    addToMultiTrack(S.duet.gtrId, S.duet.gtrPatId, S.duet.bpm, buildChords(S.duet.key, S.duet.mood, S.duet.progIdx, 4));
   });
-  populatePatSelect('duet-gtr-pat',S.duet.gtrId,S.duet.gtrPatId);
-  document.getElementById('duet-gtr-pat').addEventListener('change',e=>S.duet.gtrPatId=e.target.value);
-  makeInstrGrid('duet-pno-grid',i=>i.t==='piano',S.duet.pnoId,id=>{
-    S.duet.pnoId=id;populatePatSelect('duet-pno-pat',id,S.duet.pnoPatId);S.duet.pnoPatId=document.getElementById('duet-pno-pat').value;
-  });
-  populatePatSelect('duet-pno-pat',S.duet.pnoId,S.duet.pnoPatId);
-  document.getElementById('duet-pno-pat').addEventListener('change',e=>S.duet.pnoPatId=e.target.value);
-  document.getElementById('duet-mix-btns').addEventListener('click',e=>{
-    const btn=e.target.closest('.mix-btn');if(!btn)return;
-    document.querySelectorAll('.mix-btn').forEach(b=>b.classList.remove('sel'));
-    btn.classList.add('sel');S.duet.mix=btn.dataset.mix;
-  });
-  document.getElementById('duet-play').addEventListener('click',duetPlay);
-  document.getElementById('duet-addmt').addEventListener('click',()=>{
-    const chords=buildChords(S.duet.key,S.duet.mood,S.duet.progIdx,4);
-    addToMultiTrack(S.duet.gtrId,S.duet.gtrPatId,S.duet.bpm,[...chords]);
-  });
-  setupRec('duet-rec','duet-rec-status','duet-rec-dur','duet-dl');
+  setupRec('duet-rec', 'duet-rec-status', 'duet-rec-dur', 'duet-dl');
 }
 
 // ═══════════════════════════════
 // LOADING SCREEN
 // ═══════════════════════════════
-document.addEventListener('DOMContentLoaded',()=>{
-  document.getElementById('load-start-btn').addEventListener('click',async()=>{
-    document.getElementById('load-start-view').style.display='none';
-    const pv=document.getElementById('load-progress-view');
-    pv.style.display='flex';
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('btn-test-sound').addEventListener('click', testBeep);
 
-    await Tone.start();
-    initToneAudio();
+  document.getElementById('btn-launch').addEventListener('click', async () => {
+    if (ctx.state === 'suspended') await ctx.resume();
 
-    const fill=document.getElementById('load-fill');
-    const status=document.getElementById('load-status');
+    document.getElementById('load-start-view').style.display = 'none';
+    const pv = document.getElementById('load-progress-view');
+    pv.style.display = 'flex';
 
-    await preloadAllInstruments((pct,name)=>{
-      fill.style.width=(pct*100)+'%';
-      if(name)status.textContent='Loaded: '+name;
+    const fill = document.getElementById('load-fill');
+    const status = document.getElementById('load-status');
+
+    await preloadAll((pct, name) => {
+      fill.style.width = (pct * 100) + '%';
+      if (name) status.textContent = name;
     });
 
-    status.textContent='Ready!';
+    status.textContent = 'Ready!';
+    fill.style.width = '100%';
 
-    const overlay=document.getElementById('loading-overlay');
-    overlay.style.opacity='0';
-    setTimeout(()=>{overlay.style.display='none';},500);
+    const overlay = document.getElementById('loading-overlay');
+    overlay.style.opacity = '0';
+    setTimeout(() => { overlay.style.display = 'none'; }, 500);
 
-    const app=document.getElementById('app');
-    app.style.opacity='1';
-    app.style.pointerEvents='auto';
+    const app = document.getElementById('app');
+    app.style.opacity = '1';
+    app.style.pointerEvents = 'auto';
 
     init();
   });
